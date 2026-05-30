@@ -13,7 +13,36 @@ Python + [PyMuPDF](https://pymupdf.readthedocs.io/) + [PySide6](https://doc.qt.i
 - **Undo / Redo**（スナップショット方式）
 - **ダークテーマ / 設定の永続化**（ウィンドウ位置・分割幅・ズーム・既定DPI・テーマ）
 
-## セットアップ
+## Windows クイックスタート（最短）
+
+1. [uv](https://docs.astral.sh/uv/) を入れる（未導入なら）: PowerShell で `winget install astral-sh.uv`
+2. **`run.bat` をダブルクリック** — 初回は依存を自動ダウンロードし、その後 GUI が起動します。
+
+毎回ダブルクリックで起動できます。デスクトップにアイコンを置きたい場合:
+
+```powershell
+# 一度 run.bat か uv sync を実行した後で
+powershell -ExecutionPolicy Bypass -File .\create-shortcut.ps1
+```
+
+- `run.bat` … 通常起動（コンソールを残さず GUI 起動）
+- `run-debug.bat` … エラーや print 出力を確認したいときの起動（コンソールを表示）
+
+## スタンドアロン EXE 化（配布用）
+
+Python も uv も無い PC へ配って**ダブルクリックで起動**したい場合は、単体 EXE を作れます。
+
+```powershell
+# ビルド（PyInstaller、初回は数分）
+.\build-exe.bat
+# 生成物: dist\PDFedit.exe （約 63MB / onefile・GUI）
+```
+
+- ビルドした PC のアーキテクチャ向け（64bit Windows）の実行ファイルが出力されます。
+- onefile のため起動時に一時展開が入り、初回起動はやや時間がかかります。
+- 配布する場合は **AGPL-3.0 の義務**（対応するソースの提供）に注意してください。
+
+## セットアップ（手動 / クロスプラットフォーム）
 
 依存パッケージは [uv](https://docs.astral.sh/uv/) で管理しています。
 

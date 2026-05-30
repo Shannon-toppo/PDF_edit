@@ -140,6 +140,23 @@
 
 ---
 
+## 9. ドラッグ＆ドロップで開く
+
+- ウィンドウ全体（`MainWindow`）と中央ペイン（`PageView`）の両方でドロップ受け入れ。
+- 注意点: 中央は `QGraphicsView` がドラッグイベントを内部処理して親へ伝播しないため、`PageView` 側に `setAcceptDrops(True)` と `dropEvent` を実装し `pdfDropped` シグナルで通知。
+- 判定は共通関数 `first_pdf_url(mime)`（`app/page_view.py`）に集約。
+
+## 10. Windows ですぐ使える化 / スタンドアロン EXE
+
+- `run.bat`: ダブルクリックで `uv sync` → `.venv\Scripts\pythonw.exe main.py` をコンソールを残さず起動。
+  - 注意点: `uv run python` だとコンソールが残るため、同期後は venv の **pythonw** を `start` で直接起動。
+- `run-debug.bat`: コンソールを表示したまま起動（エラー確認用）。
+- `create-shortcut.ps1`: デスクトップショートカット作成（WScript.Shell）。
+- **EXE 化**: `uv add --dev pyinstaller` → `build-exe.bat`（`pyinstaller --onefile --windowed --name PDFedit main.py`）。
+  - 生成物 `dist\PDFedit.exe` 約 63MB。PySide6 / PyMuPDF とも PyInstaller の標準フックで追加設定なしにバンドル可能だった。
+  - 起動確認: PDF を引数に渡しても常駐（fitz 読み込み・PDF オープン成功）。
+  - 注意点: onefile は起動時に一時展開が入る。配布時は AGPL-3.0 のソース提供義務に注意。`build/` `dist/` `*.spec` は `.gitignore`。
+
 ## 横断的な注意点・既知の制約
 
 - **文字編集は再描画方式**: 文字数を増やすと折り返し・位置がずれる場合がある。複雑な背景では塗りつぶし色の推定が外れる（手動指定 or 上書きモードで回避）。
