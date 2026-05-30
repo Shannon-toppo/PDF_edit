@@ -171,6 +171,28 @@
 
 ---
 
+## 12. 複数選択での文字色一括変更
+
+- **操作**: テキストモードで通常クリック=単一選択、**Ctrl+クリックで複数選択にトグル**（追加/除去）。選択中スパンは赤枠で全て強調。
+- **page_view.py**: `spanToggled(int)` シグナルを追加。選択マーカーを単一 `_sel_item` から複数 `_sel_items` に一般化（`mark_selections(bboxes)` / `mark_selection` は委譲）。`mousePressEvent` で `Ctrl` 修飾時は `spanToggled`、通常は `spanSelected` を emit。
+- **text_panel.py**: `set_selection(spans)` を追加。0/1 件は従来の単一編集 UI、2 件以上は単一フィールドを無効化し「複数選択」グループ（文字色選択＋適用）を表示。`applyColorRequested((r,g,b))` を emit。
+- **main_window.py**: 選択インデックス `self._sel_spans` を保持。`_apply_color_multi` が **1 スナップショット内**で各スパンを「redaction→origin に再描画」しつつ、文字・サイズ・（推定できる範囲で）元フォントは保ったまま色だけ差し替える。
+- **元フォントの推定**（色だけ変えたいので見た目維持が重要）: `_resolve_span_fontfile` がスパンの `font` 名（subset 接頭辞 `ABCDEF+` を除去・英数字小文字に正規化）を、`font_cache.resolve_families` で作った「正規化ファミリ名→パス」表と突き合わせる。完全一致→部分一致→既定日本語フォントの順でフォールバック。表は遅延構築してキャッシュ。
+- **注意**: 色変更も再描画方式なので、長文や複雑背景・回転ページでは従来同様のずれが起こりうる（単一編集と同じ制約）。`_refresh_page` で `_sel_spans` をリセットする。
+- 検証: 3 スパンの PDF で 2 つを選択→赤に一括変更し、選択分だけ赤・未選択は黒のまま、`can_undo` が立つこと、フォント推定（`ABCDEF+MSGothic`→`msgothic.ttc`）を offscreen で確認。
+
+---
+
+## 13. ユーザー指定した文字色・塗りつぶし色の保持
+
+- 従来はスパンを選ぶたびに `set_span` が文字色をそのスパンの色で上書きしていたため、ユーザーが選んだ色がリセットされていた。
+- **text_panel.py**: `_color_user_set` / `_fill_user_set` フラグを追加。`_pick_color`/`_pick_fill` で True にし、以降 `set_span` / `set_selection` ではユーザー指定済みなら**スパンの色で上書きしない**（未指定時のみスパン色を採用）。
+- **起動間の保持**: `current_prefs()` / `restore_prefs()` を追加し、`main_window` の `_save_settings`/`_restore_settings` が QSettings の `text/color`・`text/fill`・`text/autoBg` に保存・復元。復元した色は「ユーザー指定済み」扱いにする。
+- 注意: 一度色を指定するとスパンの元色には自動で戻らない（明示的に色を選び直す）。`restore_prefs` は `text_panel` 生成後（`__init__` 内の `_restore_settings`）に呼ばれる前提。
+- 検証: 青スパン→赤を指定→黒スパン選択でも赤を保持、複数選択でも保持、保存/復元の往復で色と user_set フラグが残ることを offscreen で確認。
+
+---
+
 ## 横断的な注意点・既知の制約
 
 - **文字編集は再描画方式**: 文字数を増やすと折り返し・位置がずれる場合がある。複雑な背景では塗りつぶし色の推定が外れる（手動指定 or 上書きモードで回避）。

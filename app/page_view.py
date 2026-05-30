@@ -27,7 +27,8 @@ def first_pdf_url(mime) -> str | None:
 
 
 class PageView(QGraphicsView):
-    spanSelected = Signal(int)     # self._spans のインデックス
+    spanSelected = Signal(int)     # self._spans のインデックス（単一選択）
+    spanToggled = Signal(int)      # Ctrl+クリックで選択に追加/除去
     imageSelected = Signal(int)    # xref
     nextPageRequested = Signal()   # 下端でさらに下スクロール
     prevPageRequested = Signal()   # 上端でさらに上スクロール
@@ -48,7 +49,7 @@ class PageView(QGraphicsView):
         self._images: list[dict] = []
         self._mode = MODE_TEXT
         self._hover_item: QGraphicsRectItem | None = None
-        self._sel_item: QGraphicsRectItem | None = None
+        self._sel_items: list[QGraphicsRectItem] = []
         self._search_items: list[QGraphicsRectItem] = []
         self._rubber: QGraphicsRectItem | None = None
         self._drag_start: QPointF | None = None
@@ -63,7 +64,7 @@ class PageView(QGraphicsView):
         self._pixitem.setZValue(0)
         self._scene.setSceneRect(QRectF(image.rect()))
         self._hover_item = None
-        self._sel_item = None
+        self._sel_items = []
         self._search_items = []
         self._rubber = None
 
@@ -84,20 +85,24 @@ class PageView(QGraphicsView):
         self.setCursor(Qt.CrossCursor if mode == MODE_ANNOT else Qt.ArrowCursor)
 
     def clear_selection_marker(self) -> None:
-        if self._sel_item is not None:
-            self._scene.removeItem(self._sel_item)
-            self._sel_item = None
+        for item in self._sel_items:
+            self._scene.removeItem(item)
+        self._sel_items = []
 
     def mark_selection(self, bbox) -> None:
-        """選択中スパンの矩形を強調表示する。"""
+        """選択中スパンの矩形を強調表示する（単一）。"""
+        self.mark_selections([bbox])
+
+    def mark_selections(self, bboxes) -> None:
+        """選択中スパンの矩形を強調表示する（複数対応）。"""
         self.clear_selection_marker()
-        rect = self._bbox_to_scene(bbox)
-        item = QGraphicsRectItem(rect)
-        item.setPen(QPen(QColor(220, 40, 40), 1.5))
-        item.setBrush(QBrush(QColor(220, 40, 40, 40)))
-        item.setZValue(20)
-        self._scene.addItem(item)
-        self._sel_item = item
+        for bbox in bboxes:
+            item = QGraphicsRectItem(self._bbox_to_scene(bbox))
+            item.setPen(QPen(QColor(220, 40, 40), 1.5))
+            item.setBrush(QBrush(QColor(220, 40, 40, 40)))
+            item.setZValue(20)
+            self._scene.addItem(item)
+            self._sel_items.append(item)
 
     # ---- 検索ハイライト ------------------------------------------------
     def set_search_highlights(self, rects, current_rect=None) -> None:
@@ -259,7 +264,10 @@ class PageView(QGraphicsView):
         if self._mode == MODE_TEXT:
             i = self._hit_span(px, py)
             if i >= 0:
-                self.spanSelected.emit(i)
+                if event.modifiers() & Qt.ControlModifier:
+                    self.spanToggled.emit(i)
+                else:
+                    self.spanSelected.emit(i)
         elif self._mode == MODE_IMAGE:
             xref, _ = self._hit_image(px, py)
             if xref >= 0:
