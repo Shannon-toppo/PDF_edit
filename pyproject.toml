@@ -1,0 +1,15 @@
+[project]
+name = "pdf-editor"
+version = "0.1.0"
+description = "軽量PDFエディター (PyMuPDF + PySide6)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "AGPL-3.0-or-later" }
+dependencies = [
+    "PyMuPDF>=1.24",
+    "PySide6>=6.6",
+]
+
+[tool.uv]
+# app/ と core/ を持つアプリケーション。配布用パッケージとしてはビルドしない。
+package = false

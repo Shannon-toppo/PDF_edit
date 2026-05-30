@@ -1,0 +1,98 @@
+# 軽量PDFエディター
+
+Python + [PyMuPDF](https://pymupdf.readthedocs.io/) + [PySide6](https://doc.qt.io/qtforpython/) で作る軽量な GUI PDF エディター。
+
+## できること
+
+- **ページの結合・分離・並べ替え・削除**
+- **ページの PNG 書き出し**（DPI 指定 / 現在ページ・全ページ）
+- **PDF 内画像の抽出・保存**（再エンコードせず原本のまま保存）
+- **選択した文字のフォント・色・サイズ・文字内容の変更**（再描画方式）
+- **Undo / Redo**（スナップショット方式）
+
+## セットアップ
+
+依存パッケージは [uv](https://docs.astral.sh/uv/) で管理しています。
+
+```powershell
+# uv を使う場合（推奨）: .venv を作成し uv.lock 通りに同期
+uv sync
+```
+
+```powershell
+# uv を使わず pip で入れる場合（requirements.txt は uv.lock から自動生成）
+pip install -r requirements.txt
+```
+
+## 起動
+
+```powershell
+uv run python main.py
+# ファイルを指定して開く場合
+uv run python main.py path\to\file.pdf
+```
+
+uv を使わない場合は `python main.py`。
+
+## 使い方
+
+| 操作 | 方法 |
+|------|------|
+| 開く / 保存 | ツールバー、または Ctrl+O / Ctrl+S |
+| ページ並べ替え・削除 | 左ペインのサムネイルを選択し「↑上へ / ↓下へ / 🗑削除」 |
+| 結合 | ツールバー「結合用に追加」で別 PDF を末尾に追加 |
+| 分離 | ツールバー「分離（範囲抽出）」で範囲を新規 PDF に保存 |
+| PNG 書き出し | ツールバー「PNG書き出し」→ 範囲と DPI を選択 |
+| 文字編集 | ツールバー「文字選択」→ 本文の文字をクリック → 右ペインで編集 → 「適用」 |
+| 画像抽出 | ツールバー「画像選択」→ 画像をクリック → 右ペインで「選択画像を保存 / すべて保存」 |
+| 拡大縮小 | ツールバー「拡大 / 縮小」 |
+| 元に戻す / やり直し | Ctrl+Z / Ctrl+Y |
+
+## 文字編集の仕組みと制約（重要）
+
+PDF は文字を「編集可能なテキストラン」ではなく「配置済みグリフ」として保持するため、
+ワープロのような完全な自由編集はできません。本ツールは実用上の上限として次の方式を採用しています。
+
+1. 選択スパンの矩形を redaction で塗りつぶし、元グリフを除去
+2. 同じ baseline 位置に、新しいフォント・色・サイズ・文字で再描画
+
+そのため以下の制約があります。
+
+- 文字数を増やすと折り返しや位置がずれる場合があります。
+- 背景が画像や色付きの場合、塗りつぶし色の推定が外れることがあります
+  （右ペインで「塗りつぶし色」を手動指定、または「上書きモード」を利用してください）。
+- 日本語は埋め込み用にシステムフォント（既定: MS ゴシック等）を使用します。
+- 回転ページ（90/270 度）では位置がずれる場合があります。
+
+## アーキテクチャ
+
+```
+main.py                  エントリポイント
+app/
+  main_window.py         3 ペイン構成と全機能の結線
+  page_view.py           ページ描画 + 文字/画像オーバーレイ（QGraphicsView）
+  dialogs.py             PNG 書き出し / 分離ダイアログ
+  panels/
+    pages_panel.py       サムネイル一覧・並べ替え・削除
+    text_panel.py        フォント/色/サイズ/文字内容の編集 UI
+    images_panel.py      画像一覧・抽出保存
+core/                    GUI 非依存のロジック
+  document.py            fitz.Document ラッパー + Undo/Redo
+  render.py              page -> QImage、座標変換
+  page_ops.py            結合・分離・並べ替え・削除・PNG
+  images.py              画像列挙・抽出・保存
+  text_edit.py           スパン検出・redaction・再描画
+  fonts.py               システムフォント列挙（埋め込み用）
+```
+
+## テスト
+
+```powershell
+uv run python smoke_test.py   # コアロジック（ヘッドレス）
+uv run python gui_smoke.py    # GUI 結線（オフスクリーン）
+```
+
+## ライセンス
+
+PyMuPDF は **AGPL-3.0**、PySide6 は LGPL です。本リポジトリは個人・社内利用を想定しています。
+配布・商用利用する場合は各ライブラリのライセンス条件を確認してください。

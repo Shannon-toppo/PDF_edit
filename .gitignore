@@ -1,0 +1,9 @@
+# uv / venv
+.venv/
+__pycache__/
+*.py[cod]
+
+# 配布物・一時出力
+build/
+dist/
+*.egg-info/
