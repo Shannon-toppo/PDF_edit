@@ -1,4 +1,4 @@
-# 軽量PDFエディター
+# PDF_edit
 
 Python + [PyMuPDF](https://pymupdf.readthedocs.io/) + [PySide6](https://doc.qt.io/qtforpython/) で作る軽量な GUI PDF エディター。
 
@@ -28,9 +28,9 @@ powershell -ExecutionPolicy Bypass -File .\create-shortcut.ps1
 - `run.bat` … 通常起動（コンソールを残さず GUI 起動）
 - `run-debug.bat` … エラーや print 出力を確認したいときの起動（コンソールを表示）
 
-## スタンドアロン EXE 化（配布用）
+## スタンドアロン EXE 化
 
-Python も uv も無い PC へ配って**ダブルクリックで起動**したい場合は、単体 EXE を作れます。
+Python も uv も無い PC で**簡単に起動**したい場合は、単体 EXE を作れます。
 
 ```powershell
 # ビルド（PyInstaller、初回は数分）
@@ -84,7 +84,7 @@ uv を使わない場合は `python main.py`。
 | ダークテーマ | メニュー「表示」→「ダークテーマ」 |
 | 元に戻す / やり直し | Ctrl+Z / Ctrl+Y |
 
-## 文字編集の仕組みと制約（重要）
+## 文字編集の仕組みと制約
 
 PDF は文字を「編集可能なテキストラン」ではなく「配置済みグリフ」として保持するため、
 ワープロのような完全な自由編集はできません。本ツールは実用上の上限として次の方式を採用しています。
