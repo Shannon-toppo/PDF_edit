@@ -157,6 +157,20 @@
   - 起動確認: PDF を引数に渡しても常駐（fitz 読み込み・PDF オープン成功）。
   - 注意点: onefile は起動時に一時展開が入る。配布時は AGPL-3.0 のソース提供義務に注意。`build/` `dist/` `*.spec` は `.gitignore`。
 
+## 11. バージョン表記
+
+- **単一の出どころ**: `app/__init__.py` の `__version__`。`pyproject.toml` は `package = false` なので `importlib.metadata.version()` は実行時に使えない（インストールされたパッケージではない）ため、Python 定数を真実とした。
+- `main.py` が `app.setApplicationVersion(__version__)` を設定。`main_window.py` でタイトルバーに `PDFedit v0.1.0`（ファイル名がある場合は `… - file.pdf`）、「ヘルプ → バージョン情報」ダイアログに版・PyMuPDF/PySide6 の版・AGPL-3.0・対応ソース URL を表示（`_show_about`）。
+- **EXE のメタ情報**: `version_info.txt`（PyInstaller の VSVersionInfo）を `build-exe.bat` が `--version-file` で参照し、EXE のプロパティ（右クリック→詳細）にファイルバージョン等を埋め込む。
+- **注意（バージョン更新時は 3 箇所を手で揃える）**:
+  1. `app/__init__.py` の `__version__`
+  2. `pyproject.toml` の `version`
+  3. `version_info.txt` の `filevers` / `prodvers` / `FileVersion` / `ProductVersion`
+  - `package = false` のため自動同期はできない。各ファイルに同期注意のコメントを記載済み。
+- 依存版は実行時取得: PyMuPDF は `fitz.version[0]`、PySide6 は `from PySide6 import __version__`。
+
+---
+
 ## 横断的な注意点・既知の制約
 
 - **文字編集は再描画方式**: 文字数を増やすと折り返し・位置がずれる場合がある。複雑な背景では塗りつぶし色の推定が外れる（手動指定 or 上書きモードで回避）。

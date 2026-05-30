@@ -15,7 +15,7 @@ uv sync
 if errorlevel 1 ( echo [エラー] uv sync に失敗しました & pause & exit /b 1 )
 
 echo ビルド中です（数分かかります）...
-uv run pyinstaller --noconfirm --clean --onefile --windowed --name PDFedit main.py
+uv run pyinstaller --noconfirm --clean --onefile --windowed --name PDFedit --version-file version_info.txt main.py
 if errorlevel 1 ( echo [エラー] ビルドに失敗しました & pause & exit /b 1 )
 
 echo.

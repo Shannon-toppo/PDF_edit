@@ -46,3 +46,4 @@ PDF は文字を「配置済みグリフ」として持つため自由編集は�
 - **設定の永続化**: `QSettings`（`main.py` で org=`LightPDF` / app=`PdfEditor`、Windows ではレジストリ）。`MainWindow.closeEvent`→`_save_settings`、起動時 `_restore_settings`。右ペインは最大幅でキャップして保存値が大きくても収める。
 - **フォント**: `core/fonts.py` が返すのはファイル名 stem。実ファミリ名への解決と「パス→ファミリ名」のディスクキャッシュは `app/font_cache.py`（mtime/size で無効化）。
 - **ライセンス**: PyMuPDF は **AGPL-3.0**。配布（EXE 含む）時はソース提供義務に注意。個人・社内利用前提。
+- **バージョン表記**: 実行時の単一の出どころは `app/__init__.py` の `__version__`（`package = false` のため `importlib.metadata` は使えない）。`main.py` が `setApplicationVersion` に渡し、`main_window.py` がタイトルバーと「ヘルプ → バージョン情報」ダイアログに表示。**バージョン更新時は 3 箇所を手で揃える**: ① `app/__init__.py` の `__version__`、② `pyproject.toml` の `version`、③ `version_info.txt`（`filevers`/`prodvers`/`FileVersion`/`ProductVersion`、EXE のプロパティに埋め込まれる）。各ファイルに同期注意のコメントあり。

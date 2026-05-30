@@ -14,7 +14,7 @@ from core import page_ops, search, text_edit
 from core.document import PdfDocument
 from core.render import render_page
 
-from . import theme
+from . import __version__, theme
 from .dialogs import ExportPngDialog, SplitDialog
 from .page_view import (MODE_ANNOT, MODE_IMAGE, MODE_PAN, MODE_TEXT, PageView,
                         first_pdf_url)
@@ -45,7 +45,7 @@ class _SearchLineEdit(QLineEdit):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PDFedit")
+        self.setWindowTitle(f"PDFedit v{__version__}")
         self.resize(1280, 860)
         self.setAcceptDrops(True)
 
@@ -243,6 +243,34 @@ class MainWindow(QMainWindow):
         m_view.addSeparator()
         m_view.addAction(self.act_theme)
 
+        m_help = mb.addMenu("ヘルプ")
+        act_about = QAction("バージョン情報", self)
+        act_about.triggered.connect(self._show_about)
+        m_help.addAction(act_about)
+
+    def _show_about(self):
+        """バージョン情報ダイアログ（アプリ版・ライセンス・依存ライブラリ版）。"""
+        try:
+            import fitz
+            mupdf_ver = fitz.version[0]
+        except Exception:
+            mupdf_ver = "?"
+        try:
+            from PySide6 import __version__ as pyside_ver
+        except Exception:
+            pyside_ver = "?"
+        repo_url = "https://github.com/Shannon-toppo/PDF_edit"
+        QMessageBox.about(
+            self,
+            "PDFedit について",
+            f"<h3>PDFedit v{__version__}</h3>"
+            "<p>軽量な GUI PDF エディター（PyMuPDF + PySide6）</p>"
+            f"<p>PyMuPDF {mupdf_ver} / PySide6 {pyside_ver}</p>"
+            "<p>ライセンス: <b>AGPL-3.0-or-later</b><br>"
+            "本ソフトは PyMuPDF（AGPL-3.0）を利用しており、全体が AGPL-3.0 で頒布されます。<br>"
+            f"対応ソース: <a href=\"{repo_url}\">{repo_url}</a></p>",
+        )
+
     # ================= ファイル操作 =================
     def open_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "PDF を開く", "",
@@ -261,7 +289,7 @@ class MainWindow(QMainWindow):
         self.pages.set_document(self.doc)
         self.images_panel.set_document(self.doc)
         self._refresh_all()
-        self.setWindowTitle(f"PDFedit - {os.path.basename(path)}")
+        self.setWindowTitle(f"PDFedit v{__version__} - {os.path.basename(path)}")
         return True
 
     # ---- ドラッグ＆ドロップ（ウィンドウ全体） -------------------------
