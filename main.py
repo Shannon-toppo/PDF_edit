@@ -5,6 +5,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
+from app import __version__
 from app.main_window import MainWindow
 
 
@@ -13,6 +14,7 @@ def main() -> int:
     app.setOrganizationName("LightPDF")
     app.setApplicationName("PdfEditor")
     app.setApplicationDisplayName("PDF_edit")
+    app.setApplicationVersion(__version__)
     window = MainWindow()
     window.show()
     # 引数で PDF パスが渡されたら開く
