@@ -71,6 +71,37 @@ def main():
     w.undo()
     print("OK delete+undo, pages:", w.doc.page_count)
 
+    # ページ回転 / 複製 / 空白挿入
+    w._rotate(90)
+    assert w.doc.page(w.current_index).rotation == 90
+    n = w.doc.page_count
+    w._duplicate_page()
+    assert w.doc.page_count == n + 1
+    w._insert_blank()
+    assert w.doc.page_count == n + 2
+    print("OK rotate/duplicate/blank, pages:", w.doc.page_count)
+
+    # 注釈追加（ハイライト）
+    from app.page_view import MODE_ANNOT
+    w._set_mode(MODE_ANNOT)
+    w.annot_panel.combo_kind.setCurrentIndex(0)
+    before = len(list(w.doc.page(w.current_index).annots()))
+    w._apply_annotation(40, 40, 200, 60)
+    after = len(list(w.doc.page(w.current_index).annots()))
+    assert after > before
+    print("OK annotation:", before, "->", after)
+
+    # 検索
+    w.search_edit.setText("page")
+    w._search_next()
+    assert w._search_results, "no search results"
+    print("OK search:", len(w._search_results), "hits")
+
+    # テーマ / 設定
+    w._toggle_theme(True)
+    w._save_settings()
+    print("OK theme toggle + settings save")
+
     # 保存
     out = os.path.join(tmp, "out.pdf")
     w.doc.save(out)

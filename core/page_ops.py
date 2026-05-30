@@ -52,3 +52,27 @@ def move_page(doc: fitz.Document, src_idx: int, dst_idx: int) -> None:
 
 def delete_page(doc: fitz.Document, idx: int) -> None:
     doc.delete_page(idx)
+
+
+def rotate_page(doc: fitz.Document, idx: int, delta: int) -> None:
+    """ページを delta 度（90 単位）回転する。"""
+    page = doc[idx]
+    page.set_rotation((page.rotation + delta) % 360)
+
+
+def duplicate_page(doc: fitz.Document, idx: int) -> None:
+    """idx のページを直後に複製する（独立コピー）。"""
+    to = idx + 1
+    if to >= doc.page_count:
+        to = -1
+    doc.fullcopy_page(idx, to)
+
+
+def insert_blank(doc: fitz.Document, idx: int,
+                 width: float | None = None, height: float | None = None) -> None:
+    """idx の直後に空白ページを挿入する。サイズ未指定なら基準ページに合わせる。"""
+    if width is None or height is None:
+        ref = doc[idx].rect
+        width = width or ref.width
+        height = height or ref.height
+    doc.new_page(pno=idx + 1, width=width, height=height)

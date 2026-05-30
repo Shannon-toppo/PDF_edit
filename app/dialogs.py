@@ -8,7 +8,8 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout
 class ExportPngDialog(QDialog):
     """PNG 書き出しの範囲と DPI を選ぶ。"""
 
-    def __init__(self, page_count: int, current_index: int, parent=None):
+    def __init__(self, page_count: int, current_index: int,
+                 default_dpi: int = 150, parent=None):
         super().__init__(parent)
         self.setWindowTitle("PNG 書き出し")
 
@@ -16,7 +17,7 @@ class ExportPngDialog(QDialog):
         self.combo_range.addItems(["現在のページ", "全ページ"])
         self.spin_dpi = QSpinBox()
         self.spin_dpi.setRange(36, 600)
-        self.spin_dpi.setValue(150)
+        self.spin_dpi.setValue(default_dpi)
         self.spin_dpi.setSingleStep(6)
 
         form = QFormLayout(self)

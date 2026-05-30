@@ -1,4 +1,4 @@
-"""軽量PDFエディター エントリポイント。"""
+"""PDFedit エントリポイント"""
 from __future__ import annotations
 
 import sys
@@ -10,18 +10,14 @@ from app.main_window import MainWindow
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("軽量PDFエディター")
+    app.setOrganizationName("LightPDF")
+    app.setApplicationName("PdfEditor")
+    app.setApplicationDisplayName("PDF_edit")
     window = MainWindow()
     window.show()
     # 引数で PDF パスが渡されたら開く
     if len(sys.argv) > 1:
-        try:
-            window.doc.open(sys.argv[1])
-            window.pages.set_document(window.doc)
-            window.images_panel.set_document(window.doc)
-            window._refresh_all()
-        except Exception:
-            pass
+        window._open_path(sys.argv[1])
     return app.exec()
 
 

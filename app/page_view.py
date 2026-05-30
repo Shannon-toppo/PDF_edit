@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal, QRectF
+from PySide6.QtCore import Qt, Signal, QPointF, QRectF
 from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QGraphicsPixmapItem, QGraphicsRectItem,
                                QGraphicsScene, QGraphicsView)
@@ -13,6 +13,17 @@ from PySide6.QtWidgets import (QGraphicsPixmapItem, QGraphicsRectItem,
 MODE_TEXT = "text"
 MODE_IMAGE = "image"
 MODE_PAN = "pan"
+MODE_ANNOT = "annot"
+
+
+def first_pdf_url(mime) -> str | None:
+    """ドラッグ中の MIME データから最初の .pdf ローカルファイルパスを返す。"""
+    if not mime.hasUrls():
+        return None
+    for url in mime.urls():
+        if url.isLocalFile() and url.toLocalFile().lower().endswith(".pdf"):
+            return url.toLocalFile()
+    return None
 
 
 class PageView(QGraphicsView):
@@ -20,6 +31,8 @@ class PageView(QGraphicsView):
     imageSelected = Signal(int)    # xref
     nextPageRequested = Signal()   # 下端でさらに下スクロール
     prevPageRequested = Signal()   # 上端でさらに上スクロール
+    annotRectDrawn = Signal(float, float, float, float)  # PDF 座標の矩形
+    pdfDropped = Signal(str)       # PDF ファイルがドロップされた
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -36,7 +49,11 @@ class PageView(QGraphicsView):
         self._mode = MODE_TEXT
         self._hover_item: QGraphicsRectItem | None = None
         self._sel_item: QGraphicsRectItem | None = None
+        self._search_items: list[QGraphicsRectItem] = []
+        self._rubber: QGraphicsRectItem | None = None
+        self._drag_start: QPointF | None = None
         self.setMouseTracking(True)
+        self.setAcceptDrops(True)
 
     # ---- 表示更新 ------------------------------------------------------
     def set_page_image(self, image: QImage, zoom: float) -> None:
@@ -47,6 +64,8 @@ class PageView(QGraphicsView):
         self._scene.setSceneRect(QRectF(image.rect()))
         self._hover_item = None
         self._sel_item = None
+        self._search_items = []
+        self._rubber = None
 
     def set_spans(self, spans: list[dict]) -> None:
         self._spans = spans
@@ -57,10 +76,12 @@ class PageView(QGraphicsView):
     def set_mode(self, mode: str) -> None:
         self._mode = mode
         self._clear_hover()
+        self._cancel_rubber()
         if mode == MODE_PAN:
             self.setDragMode(QGraphicsView.ScrollHandDrag)
         else:
             self.setDragMode(QGraphicsView.NoDrag)
+        self.setCursor(Qt.CrossCursor if mode == MODE_ANNOT else Qt.ArrowCursor)
 
     def clear_selection_marker(self) -> None:
         if self._sel_item is not None:
@@ -77,6 +98,37 @@ class PageView(QGraphicsView):
         item.setZValue(20)
         self._scene.addItem(item)
         self._sel_item = item
+
+    # ---- 検索ハイライト ------------------------------------------------
+    def set_search_highlights(self, rects, current_rect=None) -> None:
+        """現在ページの検索ヒットを黄色で、選択中のヒットはオレンジで表示する。"""
+        self.clear_search_highlights()
+        for r in rects:
+            is_current = (current_rect is not None
+                          and abs(r.x0 - current_rect.x0) < 0.01
+                          and abs(r.y0 - current_rect.y0) < 0.01
+                          and abs(r.x1 - current_rect.x1) < 0.01
+                          and abs(r.y1 - current_rect.y1) < 0.01)
+            item = QGraphicsRectItem(self._bbox_to_scene((r.x0, r.y0, r.x1, r.y1)))
+            if is_current:
+                item.setPen(QPen(QColor(210, 90, 0), 1.5))
+                item.setBrush(QBrush(QColor(255, 140, 0, 150)))
+                item.setZValue(16)  # 通常ヒットより前面に
+            else:
+                item.setPen(QPen(QColor(230, 180, 0), 1.0))
+                item.setBrush(QBrush(QColor(255, 230, 0, 90)))
+                item.setZValue(15)
+            self._scene.addItem(item)
+            self._search_items.append(item)
+
+    def clear_search_highlights(self) -> None:
+        for item in self._search_items:
+            self._scene.removeItem(item)
+        self._search_items = []
+
+    def scroll_to_rect(self, rect_points) -> None:
+        x0, y0, x1, y1 = rect_points
+        self.ensureVisible(self._bbox_to_scene((x0, y0, x1, y1)), 60, 60)
 
     # ---- スクロール ----------------------------------------------------
     def scroll_to_top(self) -> None:
@@ -101,6 +153,27 @@ class PageView(QGraphicsView):
                 event.accept()
                 return
         super().wheelEvent(event)
+
+    # ---- ドラッグ＆ドロップ（中央ペイン） ------------------------------
+    def dragEnterEvent(self, event):
+        if first_pdf_url(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if first_pdf_url(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        path = first_pdf_url(event.mimeData())
+        if path:
+            event.acceptProposedAction()
+            self.pdfDropped.emit(path)
+        else:
+            event.ignore()
 
     # ---- 内部ヘルパ ----------------------------------------------------
     def _bbox_to_scene(self, bbox) -> QRectF:
@@ -127,10 +200,20 @@ class PageView(QGraphicsView):
                     return img["xref"], r
         return -1, None
 
+    def _cancel_rubber(self) -> None:
+        if self._rubber is not None:
+            self._scene.removeItem(self._rubber)
+            self._rubber = None
+        self._drag_start = None
+
     # ---- マウス --------------------------------------------------------
     def mouseMoveEvent(self, event):
+        if self._mode == MODE_ANNOT and self._rubber is not None:
+            sp = self.mapToScene(event.position().toPoint())
+            self._rubber.setRect(QRectF(self._drag_start, sp).normalized())
+            return
         super().mouseMoveEvent(event)
-        if self._mode == MODE_PAN or self._pixitem is None:
+        if self._mode in (MODE_PAN, MODE_ANNOT) or self._pixitem is None:
             return
         sp = self.mapToScene(event.position().toPoint())
         px, py = sp.x() / self._zoom, sp.y() / self._zoom
@@ -156,7 +239,19 @@ class PageView(QGraphicsView):
             self.setCursor(Qt.ArrowCursor)
 
     def mousePressEvent(self, event):
-        if self._mode == MODE_PAN or self._pixitem is None:
+        if self._pixitem is None:
+            super().mousePressEvent(event)
+            return
+        if self._mode == MODE_ANNOT and event.button() == Qt.LeftButton:
+            self._cancel_rubber()
+            self._drag_start = self.mapToScene(event.position().toPoint())
+            self._rubber = QGraphicsRectItem(QRectF(self._drag_start, self._drag_start))
+            self._rubber.setPen(QPen(QColor(40, 120, 220), 1.0, Qt.DashLine))
+            self._rubber.setBrush(QBrush(QColor(40, 120, 220, 30)))
+            self._rubber.setZValue(25)
+            self._scene.addItem(self._rubber)
+            return
+        if self._mode == MODE_PAN:
             super().mousePressEvent(event)
             return
         sp = self.mapToScene(event.position().toPoint())
@@ -170,3 +265,15 @@ class PageView(QGraphicsView):
             if xref >= 0:
                 self.imageSelected.emit(xref)
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._mode == MODE_ANNOT and self._rubber is not None:
+            r = self._rubber.rect()
+            self._cancel_rubber()
+            z = self._zoom
+            x0, y0 = r.x() / z, r.y() / z
+            x1, y1 = (r.x() + r.width()) / z, (r.y() + r.height()) / z
+            if (x1 - x0) >= 2 and (y1 - y0) >= 2:  # 微小ドラッグは無視
+                self.annotRectDrawn.emit(x0, y0, x1, y1)
+            return
+        super().mouseReleaseEvent(event)

@@ -1,11 +1,18 @@
 """右ペイン: 選択スパンのフォント・色・サイズ・文字内容の編集 UI。"""
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox,
                                QFormLayout, QGroupBox, QLabel, QLineEdit,
                                QPushButton, QVBoxLayout, QWidget)
+
+from ..font_cache import resolve_families
+
+# Qt::ItemDataRole の独自割り当て
+_PATH_ROLE = Qt.UserRole          # 埋め込み用フォントファイルのパス
+_FAMILY_ROLE = Qt.UserRole + 1    # 解決済みファミリ名（プレビュー用）
+_PREVIEW_PT = 12
 
 from core import fonts as fontlib
 from core.text_edit import int_to_rgb01
@@ -27,11 +34,7 @@ class TextPanel(QWidget):
         self.edit_text = QLineEdit()
 
         self.combo_font = QComboBox()
-        for label in self._fonts:
-            self.combo_font.addItem(label)
-        default = fontlib.default_font(self._fonts)
-        if default:
-            self.combo_font.setCurrentText(default)
+        self._build_font_combo()
 
         self.spin_size = QDoubleSpinBox()
         self.spin_size.setRange(1.0, 400.0)
@@ -96,6 +99,37 @@ class TextPanel(QWidget):
     def clear(self) -> None:
         self.set_span(None)
 
+    # ---- フォントプレビュー --------------------------------------------
+    def _build_font_combo(self) -> None:
+        """フォント名をそのフォント自身で描画する。ファミリ名解決はキャッシュ利用。"""
+        families = resolve_families(self._fonts)  # label -> family（ディスクキャッシュ）
+        seen: dict[str, int] = {}
+        for label, path in self._fonts.items():
+            family = families.get(label, label)
+            # 同名ファミリ（太さ違いファイル等）はファイル名を併記して区別
+            seen[family] = seen.get(family, 0) + 1
+            display = family if seen[family] == 1 else f"{family}（{label}）"
+            idx = self.combo_font.count()
+            self.combo_font.addItem(display)
+            self.combo_font.setItemData(idx, path, _PATH_ROLE)
+            self.combo_font.setItemData(idx, family, _FAMILY_ROLE)
+            # 一覧の各項目をそのフォントで描画（プレビュー）
+            self.combo_font.setItemData(idx, QFont(family, _PREVIEW_PT), Qt.FontRole)
+        self.combo_font.currentIndexChanged.connect(self._on_font_changed)
+
+        default = fontlib.default_font(self._fonts)
+        if default:
+            i = self.combo_font.findData(self._fonts[default], _PATH_ROLE)
+            if i >= 0:
+                self.combo_font.setCurrentIndex(i)
+        self._on_font_changed(self.combo_font.currentIndex())
+
+    def _on_font_changed(self, idx: int) -> None:
+        # 閉じた状態の表示も選択フォントでプレビューする
+        family = self.combo_font.itemData(idx, _FAMILY_ROLE)
+        if family:
+            self.combo_font.setFont(QFont(family, 11))
+
     # ---- 内部 ----------------------------------------------------------
     def _pick_color(self):
         c = QColorDialog.getColor(self._color, self, "文字色")
@@ -119,11 +153,10 @@ class TextPanel(QWidget):
     def _emit_apply(self):
         if self._span is None:
             return
-        label = self.combo_font.currentText()
         payload = {
             "span": self._span,
             "text": self.edit_text.text(),
-            "fontfile": self._fonts.get(label),
+            "fontfile": self.combo_font.currentData(_PATH_ROLE),
             "fontsize": self.spin_size.value(),
             "color": (self._color.redF(), self._color.greenF(), self._color.blueF()),
             "fill": (self._fill.redF(), self._fill.greenF(), self._fill.blueF()),

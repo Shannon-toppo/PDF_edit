@@ -3,19 +3,22 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QSettings, Signal
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
-from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QMainWindow,
-                               QMessageBox, QSplitter, QStackedWidget, QToolBar,
-                               QWidget)
+from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
+                               QLineEdit, QMainWindow, QMessageBox, QPushButton,
+                               QSplitter, QStackedWidget, QToolBar, QWidget)
 
-from core import images as imglib
-from core import page_ops, text_edit
+from core import annots, images as imglib
+from core import page_ops, search, text_edit
 from core.document import PdfDocument
 from core.render import render_page
 
+from . import theme
 from .dialogs import ExportPngDialog, SplitDialog
-from .page_view import MODE_IMAGE, MODE_PAN, MODE_TEXT, PageView
+from .page_view import (MODE_ANNOT, MODE_IMAGE, MODE_PAN, MODE_TEXT, PageView,
+                        first_pdf_url)
+from .panels.annot_panel import AnnotPanel
 from .panels.images_panel import ImagesPanel
 from .panels.pages_panel import PagesPanel
 from .panels.text_panel import TextPanel
@@ -23,15 +26,37 @@ from .panels.text_panel import TextPanel
 ZOOM_STEPS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
 
 
+class _SearchLineEdit(QLineEdit):
+    """Enter で「次へ」、Shift+Enter で「前へ」を発火する検索入力欄。"""
+    searchNext = Signal()
+    searchPrev = Signal()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if event.modifiers() & Qt.ShiftModifier:
+                self.searchPrev.emit()
+            else:
+                self.searchNext.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("軽量PDFエディター")
+        self.setWindowTitle("PDFedit")
         self.resize(1280, 860)
+        self.setAcceptDrops(True)
 
+        self.settings = QSettings()
         self.doc = PdfDocument()
         self.current_index = 0
         self._zoom_idx = 2  # 1.0
+        self._export_dpi = int(self.settings.value("export/dpi", 150))
+        self._search_results: list[tuple[int, object]] = []
+        self._search_idx = -1
+        self._search_query = ""
 
         # --- 中央ビュー ---
         self.view = PageView()
@@ -39,6 +64,8 @@ class MainWindow(QMainWindow):
         self.view.imageSelected.connect(self._on_image_clicked)
         self.view.nextPageRequested.connect(self._scroll_to_next_page)
         self.view.prevPageRequested.connect(self._scroll_to_prev_page)
+        self.view.annotRectDrawn.connect(self._apply_annotation)
+        self.view.pdfDropped.connect(self._open_path)
 
         # --- 左 ---
         self.pages = PagesPanel()
@@ -55,30 +82,37 @@ class MainWindow(QMainWindow):
         self.images_panel.saveSelected.connect(self._save_one_image)
         self.images_panel.saveAll.connect(self._save_all_images)
         self.images_panel.imageHighlighted.connect(self._highlight_image)
+        self.annot_panel = AnnotPanel()
         self.right = QStackedWidget()
-        self.right.addWidget(self.text_panel)    # index 0
+        self.right.addWidget(self.text_panel)     # index 0
         self.right.addWidget(self.images_panel)   # index 1
+        self.right.addWidget(self.annot_panel)    # index 2
+        self.right.setMinimumWidth(180)
+        self.right.setMaximumWidth(280)
 
-        splitter = QSplitter(Qt.Horizontal)
+        self.splitter = QSplitter(Qt.Horizontal)
         left_holder = QWidget()
         lh = QHBoxLayout(left_holder)
         lh.setContentsMargins(0, 0, 0, 0)
         lh.addWidget(self.pages)
-        splitter.addWidget(left_holder)
-        splitter.addWidget(self.view)
-        splitter.addWidget(self.right)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 0)
-        splitter.setSizes([200, 760, 320])
-        self.setCentralWidget(splitter)
+        self.splitter.addWidget(left_holder)
+        self.splitter.addWidget(self.view)
+        self.splitter.addWidget(self.right)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setStretchFactor(2, 0)
+        self.splitter.setSizes([190, 850, 240])
+        self.setCentralWidget(self.splitter)
 
         self._spans: list[dict] = []
         self._page_images: list[dict] = []
         self._build_actions()
         self._build_toolbar()
+        self._build_search_toolbar()
+        self._build_menubar()
         self.statusBar().showMessage("ファイルを開いてください")
         self._update_actions()
+        self._restore_settings()
 
     # ================= アクション / ツールバー =================
     def _build_actions(self):
@@ -106,16 +140,35 @@ class MainWindow(QMainWindow):
         self.act_zoom_out = QAction("縮小", self, shortcut=QKeySequence.ZoomOut)
         self.act_zoom_out.triggered.connect(lambda: self._zoom(-1))
 
+        # ページ編集
+        self.act_rot_cw = QAction("右に90°回転", self)
+        self.act_rot_cw.triggered.connect(lambda: self._rotate(90))
+        self.act_rot_ccw = QAction("左に90°回転", self)
+        self.act_rot_ccw.triggered.connect(lambda: self._rotate(-90))
+        self.act_dup = QAction("ページを複製", self)
+        self.act_dup.triggered.connect(self._duplicate_page)
+        self.act_blank = QAction("空白ページを挿入", self)
+        self.act_blank.triggered.connect(self._insert_blank)
+        self.act_del = QAction("ページを削除", self)
+        self.act_del.triggered.connect(lambda: self._delete_page(self.current_index))
+
+        # テーマ
+        self.act_theme = QAction("ダークテーマ", self, checkable=True)
+        self.act_theme.triggered.connect(self._toggle_theme)
+
         # 選択モード
         self.act_mode_text = QAction("文字選択", self, checkable=True)
         self.act_mode_image = QAction("画像選択", self, checkable=True)
+        self.act_mode_annot = QAction("注釈", self, checkable=True)
         self.act_mode_pan = QAction("移動", self, checkable=True)
         self.act_mode_text.setChecked(True)
         grp = QActionGroup(self)
-        for a in (self.act_mode_text, self.act_mode_image, self.act_mode_pan):
+        for a in (self.act_mode_text, self.act_mode_image, self.act_mode_annot,
+                  self.act_mode_pan):
             grp.addAction(a)
         self.act_mode_text.triggered.connect(lambda: self._set_mode(MODE_TEXT))
         self.act_mode_image.triggered.connect(lambda: self._set_mode(MODE_IMAGE))
+        self.act_mode_annot.triggered.connect(lambda: self._set_mode(MODE_ANNOT))
         self.act_mode_pan.triggered.connect(lambda: self._set_mode(MODE_PAN))
 
     def _build_toolbar(self):
@@ -134,27 +187,103 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         tb.addAction(self.act_mode_text)
         tb.addAction(self.act_mode_image)
+        tb.addAction(self.act_mode_annot)
         tb.addAction(self.act_mode_pan)
         tb.addSeparator()
         tb.addAction(self.act_zoom_out)
         tb.addAction(self.act_zoom_in)
 
+    def _build_search_toolbar(self):
+        tb = QToolBar("検索")
+        tb.setMovable(False)
+        self.addToolBarBreak()
+        self.addToolBar(tb)
+        tb.addWidget(QLabel(" 検索: "))
+        self.search_edit = _SearchLineEdit()
+        self.search_edit.setPlaceholderText("文書全体を検索（Enter:次へ / Shift+Enter:前へ）")
+        self.search_edit.setMaximumWidth(280)
+        self.search_edit.searchNext.connect(self._search_next)
+        self.search_edit.searchPrev.connect(self._search_prev)
+        tb.addWidget(self.search_edit)
+        self.btn_search_prev = QPushButton("前へ")
+        self.btn_search_next = QPushButton("次へ")
+        self.btn_search_prev.clicked.connect(self._search_prev)
+        self.btn_search_next.clicked.connect(self._search_next)
+        tb.addWidget(self.btn_search_prev)
+        tb.addWidget(self.btn_search_next)
+        self.search_label = QLabel("  0 件")
+        tb.addWidget(self.search_label)
+
+    def _build_menubar(self):
+        mb = self.menuBar()
+        m_file = mb.addMenu("ファイル")
+        for a in (self.act_open, self.act_save, self.act_saveas):
+            m_file.addAction(a)
+        m_file.addSeparator()
+        m_file.addAction(self.act_merge)
+        m_file.addAction(self.act_split)
+        m_file.addAction(self.act_png)
+
+        m_edit = mb.addMenu("編集")
+        m_edit.addAction(self.act_undo)
+        m_edit.addAction(self.act_redo)
+
+        m_page = mb.addMenu("ページ")
+        for a in (self.act_rot_cw, self.act_rot_ccw, self.act_dup,
+                  self.act_blank, self.act_del):
+            m_page.addAction(a)
+
+        m_view = mb.addMenu("表示")
+        m_view.addAction(self.act_zoom_in)
+        m_view.addAction(self.act_zoom_out)
+        m_view.addSeparator()
+        for a in (self.act_mode_text, self.act_mode_image, self.act_mode_annot,
+                  self.act_mode_pan):
+            m_view.addAction(a)
+        m_view.addSeparator()
+        m_view.addAction(self.act_theme)
+
     # ================= ファイル操作 =================
     def open_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "PDF を開く", "",
                                               "PDF ファイル (*.pdf)")
-        if not path:
-            return
+        if path:
+            self._open_path(path)
+
+    def _open_path(self, path: str) -> bool:
+        """指定パスの PDF を開く（ダイアログ / D&D / CLI 引数で共用）。"""
         try:
             self.doc.open(path)
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"開けませんでした:\n{e}")
-            return
+            return False
         self.current_index = 0
         self.pages.set_document(self.doc)
         self.images_panel.set_document(self.doc)
         self._refresh_all()
-        self.setWindowTitle(f"軽量PDFエディター - {os.path.basename(path)}")
+        self.setWindowTitle(f"PDFedit - {os.path.basename(path)}")
+        return True
+
+    # ---- ドラッグ＆ドロップ（ウィンドウ全体） -------------------------
+    def dragEnterEvent(self, event):
+        if first_pdf_url(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if first_pdf_url(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        path = first_pdf_url(event.mimeData())
+        if path:
+            event.acceptProposedAction()
+            self._open_path(path)
+        else:
+            event.ignore()
 
     def save_file(self):
         if not self._require_doc():
@@ -218,12 +347,14 @@ class MainWindow(QMainWindow):
     def export_png(self):
         if not self._require_doc():
             return
-        dlg = ExportPngDialog(self.doc.page_count, self.current_index, self)
+        dlg = ExportPngDialog(self.doc.page_count, self.current_index,
+                              self._export_dpi, self)
         if dlg.exec() != dlg.DialogCode.Accepted:
             return
         out_dir = QFileDialog.getExistingDirectory(self, "PNG の保存先フォルダ")
         if not out_dir:
             return
+        self._export_dpi = dlg.dpi()
         try:
             paths = page_ops.export_png(self.doc.doc, dlg.result_indices(),
                                         out_dir, dlg.dpi())
@@ -268,6 +399,101 @@ class MainWindow(QMainWindow):
         self.pages.refresh(keep_row=self.current_index)
         self._refresh_page()
         self._update_actions()
+
+    def _rotate(self, delta: int):
+        if not self._require_doc():
+            return
+        self.doc.snapshot()
+        page_ops.rotate_page(self.doc.doc, self.current_index, delta)
+        self.pages.refresh(keep_row=self.current_index)
+        self._refresh_page()
+        self._update_actions()
+
+    def _duplicate_page(self):
+        if not self._require_doc():
+            return
+        self.doc.snapshot()
+        page_ops.duplicate_page(self.doc.doc, self.current_index)
+        self.current_index += 1
+        self.pages.refresh(keep_row=self.current_index)
+        self._refresh_page()
+        self._update_actions()
+        self.statusBar().showMessage("ページを複製しました", 4000)
+
+    def _insert_blank(self):
+        if not self._require_doc():
+            return
+        self.doc.snapshot()
+        page_ops.insert_blank(self.doc.doc, self.current_index)
+        self.current_index += 1
+        self.pages.refresh(keep_row=self.current_index)
+        self._refresh_page()
+        self._update_actions()
+        self.statusBar().showMessage("空白ページを挿入しました", 4000)
+
+    # ================= 注釈 =================
+    def _apply_annotation(self, x0: float, y0: float, x1: float, y1: float):
+        if not self._require_doc():
+            return
+        opts = self.annot_panel.options()
+        try:
+            self.doc.snapshot()
+            page = self.doc.page(self.current_index)
+            annots.add_annotation(page, opts["kind"], (x0, y0, x1, y1),
+                                  color=opts["color"], text=opts["text"],
+                                  fontsize=opts["fontsize"])
+            self._refresh_page()
+            self.pages.refresh(keep_row=self.current_index)
+            self.statusBar().showMessage(
+                f"{annots.LABELS[opts['kind']]}を追加しました", 4000)
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"注釈の追加に失敗しました:\n{e}")
+        self._update_actions()
+
+    # ================= 検索 =================
+    def _run_search(self, query: str):
+        self._search_query = query
+        self._search_results = search.search_document(self.doc.doc, query) \
+            if self.doc.is_open else []
+        self._search_idx = -1
+        self.search_label.setText(f"  {len(self._search_results)} 件")
+
+    def _search_step(self, step: int):
+        if not self.doc.is_open:
+            return
+        query = self.search_edit.text().strip()
+        if query != self._search_query or not self._search_results:
+            self._run_search(query)
+        if not self._search_results:
+            self.search_label.setText("  0 件")
+            self.view.clear_search_highlights()
+            return
+        self._search_idx = (self._search_idx + step) % len(self._search_results)
+        page_idx, rect = self._search_results[self._search_idx]
+        if page_idx != self.current_index:
+            self.current_index = page_idx
+            self.pages.set_current_index(page_idx)
+        else:
+            self._highlight_search_on_page()
+        QTimer.singleShot(0, lambda: self.view.scroll_to_rect(
+            (rect.x0, rect.y0, rect.x1, rect.y1)))
+        self.search_label.setText(
+            f"  {self._search_idx + 1} / {len(self._search_results)} 件")
+
+    def _search_next(self):
+        self._search_step(+1)
+
+    def _search_prev(self):
+        self._search_step(-1)
+
+    def _highlight_search_on_page(self):
+        rects = [r for (p, r) in self._search_results if p == self.current_index]
+        current = None
+        if 0 <= self._search_idx < len(self._search_results):
+            p, r = self._search_results[self._search_idx]
+            if p == self.current_index:
+                current = r
+        self.view.set_search_highlights(rects, current)
 
     # ================= 文字編集 =================
     def _on_span_selected(self, span_idx: int):
@@ -373,10 +599,12 @@ class MainWindow(QMainWindow):
     def _set_mode(self, mode: str):
         self.view.set_mode(mode)
         self.view.clear_selection_marker()
-        if mode == MODE_IMAGE:
-            self.right.setCurrentIndex(1)
-        elif mode == MODE_TEXT:
+        if mode == MODE_TEXT:
             self.right.setCurrentIndex(0)
+        elif mode == MODE_IMAGE:
+            self.right.setCurrentIndex(1)
+        elif mode == MODE_ANNOT:
+            self.right.setCurrentIndex(2)
 
     def _zoom(self, delta: int):
         self._zoom_idx = max(0, min(len(ZOOM_STEPS) - 1, self._zoom_idx + delta))
@@ -402,6 +630,10 @@ class MainWindow(QMainWindow):
         self.images_panel.set_images(self._page_images)
         self.text_panel.clear()
 
+        # 検索中なら、このページのヒットを再ハイライト
+        if self._search_query and self._search_results:
+            self._highlight_search_on_page()
+
         self.statusBar().showMessage(
             f"ページ {self.current_index + 1} / {self.doc.page_count}  "
             f"(拡大 {int(zoom * 100)}%)")
@@ -410,10 +642,45 @@ class MainWindow(QMainWindow):
         ok = self.doc.is_open
         for a in (self.act_save, self.act_saveas, self.act_merge, self.act_split,
                   self.act_png, self.act_zoom_in, self.act_zoom_out,
-                  self.act_mode_text, self.act_mode_image, self.act_mode_pan):
+                  self.act_mode_text, self.act_mode_image, self.act_mode_annot,
+                  self.act_mode_pan, self.act_rot_cw, self.act_rot_ccw,
+                  self.act_dup, self.act_blank, self.act_del):
             a.setEnabled(ok)
         self.act_undo.setEnabled(ok and self.doc.can_undo())
         self.act_redo.setEnabled(ok and self.doc.can_redo())
+
+    # ================= テーマ / 設定 =================
+    def _toggle_theme(self, checked: bool):
+        theme.apply_theme(QApplication.instance(), checked)
+        self.settings.setValue("theme/dark", checked)
+
+    def _restore_settings(self):
+        dark = self.settings.value("theme/dark", False, type=bool)
+        self.act_theme.setChecked(dark)
+        theme.apply_theme(QApplication.instance(), dark)
+
+        geom = self.settings.value("ui/geometry")
+        if geom is not None:
+            self.restoreGeometry(geom)
+        sizes = self.settings.value("ui/splitterSizes")
+        if sizes:
+            try:
+                self.splitter.setSizes([int(x) for x in sizes])
+            except (TypeError, ValueError):
+                pass
+        self._zoom_idx = int(self.settings.value("view/zoomIndex", self._zoom_idx))
+        self._zoom_idx = max(0, min(len(ZOOM_STEPS) - 1, self._zoom_idx))
+
+    def _save_settings(self):
+        self.settings.setValue("theme/dark", self.act_theme.isChecked())
+        self.settings.setValue("ui/geometry", self.saveGeometry())
+        self.settings.setValue("ui/splitterSizes", self.splitter.sizes())
+        self.settings.setValue("view/zoomIndex", self._zoom_idx)
+        self.settings.setValue("export/dpi", self._export_dpi)
+
+    def closeEvent(self, event):
+        self._save_settings()
+        super().closeEvent(event)
 
     # ================= 補助 =================
     def _require_doc(self) -> bool:
