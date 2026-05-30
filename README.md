@@ -94,5 +94,5 @@ uv run python gui_smoke.py    # GUI 結線（オフスクリーン）
 
 ## ライセンス
 
-PyMuPDF は **AGPL-3.0**、PySide6 は LGPL です。本リポジトリは個人・社内利用を想定しています。
-配布・商用利用する場合は各ライブラリのライセンス条件を確認してください。
+PyMuPDF は **AGPL-3.0**、PySide6 は LGPL です。
+そのため、本レポジトリのライセンスはAGPL-3.0です。
