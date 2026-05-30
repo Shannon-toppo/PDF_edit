@@ -19,7 +19,8 @@ from core.text_edit import int_to_rgb01
 
 
 class TextPanel(QWidget):
-    applyRequested = Signal(dict)   # 編集内容を main_window へ通知
+    applyRequested = Signal(dict)        # 単一スパンの編集内容を main_window へ通知
+    applyColorRequested = Signal(tuple)  # 複数選択時の文字色一括変更 (r,g,b) 0..1
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -27,6 +28,10 @@ class TextPanel(QWidget):
         self._color = QColor(0, 0, 0)
         self._fill = QColor(255, 255, 255)
         self._span = None
+        self._multi = False
+        # ユーザーが色を明示指定したら、以降は選択スパンの色で上書きせず保持する
+        self._color_user_set = False
+        self._fill_user_set = False
 
         self.info = QLabel("テキストを選択してください")
         self.info.setWordWrap(True)
@@ -65,26 +70,83 @@ class TextPanel(QWidget):
         bg_layout.addWidget(self.chk_overlay)
         bg_layout.addWidget(self.chk_autobg)
         bg_layout.addWidget(self.btn_fill)
+        self.bg_box = bg_box
+
+        # --- 複数選択（文字色のみ一括変更） ---
+        self.multi_box = QGroupBox("複数選択")
+        multi_layout = QVBoxLayout(self.multi_box)
+        self.lbl_multi = QLabel("")
+        self.lbl_multi.setWordWrap(True)
+        self.btn_multi_color = QPushButton("文字色を選択")
+        self.btn_multi_color.clicked.connect(self._pick_color)
+        self.btn_multi_apply = QPushButton("文字色を適用")
+        self.btn_multi_apply.clicked.connect(self._emit_apply_color)
+        multi_layout.addWidget(self.lbl_multi)
+        multi_layout.addWidget(self.btn_multi_color)
+        multi_layout.addWidget(self.btn_multi_apply)
+        self.multi_box.setVisible(False)
 
         note = QLabel("※ 再描画方式のため、長文化すると折り返しや位置が"
                       "ずれる場合があります。")
         note.setWordWrap(True)
         note.setStyleSheet("color: #a06000;")
 
+        hint = QLabel("※ Ctrl+クリックで複数のテキストを選択できます。")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #607080;")
+
         layout = QVBoxLayout(self)
         layout.addWidget(self.info)
+        layout.addWidget(hint)
         layout.addLayout(form)
         layout.addWidget(bg_box)
+        layout.addWidget(self.multi_box)
         layout.addWidget(note)
         layout.addWidget(self.btn_apply)
         layout.addStretch(1)
         self._update_color_buttons()
 
     # ---- 選択反映 ------------------------------------------------------
+    def set_selection(self, spans: list[dict]) -> None:
+        """選択スパン一覧を反映する。0/1 件は単一編集 UI、2 件以上は色一括 UI。"""
+        if not spans:
+            self._multi = False
+            self.multi_box.setVisible(False)
+            self._set_single_enabled(True)
+            self.set_span(None)
+            return
+        if len(spans) == 1:
+            self._multi = False
+            self.multi_box.setVisible(False)
+            self._set_single_enabled(True)
+            self.set_span(spans[0])
+            return
+        # 複数選択: 文字色のみ一括変更
+        self._multi = True
+        self._span = None
+        self._set_single_enabled(False)
+        self.multi_box.setVisible(True)
+        self.info.setText(f"{len(spans)} 個のテキストを選択中")
+        self.lbl_multi.setText(
+            f"{len(spans)} 個のテキストの文字色をまとめて変更します。"
+            "（フォント・サイズ・文字内容は変更しません）")
+        # 文字色の初期値: ユーザー指定済みなら保持、未指定なら先頭スパンの色
+        if not self._color_user_set:
+            r, g, b = int_to_rgb01(spans[0].get("color", 0))
+            self._color = QColor(round(r * 255), round(g * 255), round(b * 255))
+        self._update_color_buttons()
+
+    def _set_single_enabled(self, enabled: bool) -> None:
+        """単一編集 UI の有効/無効を切り替える。"""
+        for w in (self.edit_text, self.combo_font, self.spin_size,
+                  self.btn_color, self.btn_apply, self.bg_box):
+            w.setEnabled(enabled)
+
     def set_span(self, span: dict | None) -> None:
         self._span = span
         if span is None:
-            self.info.setText("テキストを選択してください")
+            if not self._multi:
+                self.info.setText("テキストを選択してください")
             self.btn_apply.setEnabled(False)
             return
         self.btn_apply.setEnabled(True)
@@ -92,12 +154,14 @@ class TextPanel(QWidget):
                           f"サイズ {span.get('size', 0):.1f}pt")
         self.edit_text.setText(span.get("text", ""))
         self.spin_size.setValue(float(span.get("size", 11.0)))
-        r, g, b = int_to_rgb01(span.get("color", 0))
-        self._color = QColor(round(r * 255), round(g * 255), round(b * 255))
+        # ユーザーが文字色を指定済みならその色を保持し、未指定ならスパンの色を採用
+        if not self._color_user_set:
+            r, g, b = int_to_rgb01(span.get("color", 0))
+            self._color = QColor(round(r * 255), round(g * 255), round(b * 255))
         self._update_color_buttons()
 
     def clear(self) -> None:
-        self.set_span(None)
+        self.set_selection([])
 
     # ---- フォントプレビュー --------------------------------------------
     def _build_font_combo(self) -> None:
@@ -135,20 +199,53 @@ class TextPanel(QWidget):
         c = QColorDialog.getColor(self._color, self, "文字色")
         if c.isValid():
             self._color = c
+            self._color_user_set = True
             self._update_color_buttons()
 
     def _pick_fill(self):
         c = QColorDialog.getColor(self._fill, self, "塗りつぶし色")
         if c.isValid():
             self._fill = c
+            self._fill_user_set = True
             self.chk_autobg.setChecked(False)
             self._update_color_buttons()
 
+    # ---- 色設定の保存/復元（QSettings 連携） ----------------------------
+    def current_prefs(self) -> dict:
+        """保持すべき色設定を返す（main_window が QSettings に保存）。"""
+        return {
+            "color": self._color.name() if self._color_user_set else "",
+            "fill": self._fill.name() if self._fill_user_set else "",
+            "auto_bg": self.chk_autobg.isChecked(),
+        }
+
+    def restore_prefs(self, color_name: str, fill_name: str, auto_bg: bool) -> None:
+        """前回ユーザー指定した色を復元する（指定があれば user_set 扱い）。"""
+        if color_name:
+            c = QColor(color_name)
+            if c.isValid():
+                self._color = c
+                self._color_user_set = True
+        if fill_name:
+            c = QColor(fill_name)
+            if c.isValid():
+                self._fill = c
+                self._fill_user_set = True
+        self.chk_autobg.setChecked(bool(auto_bg))
+        self._update_color_buttons()
+
     def _update_color_buttons(self):
-        self.btn_color.setStyleSheet(
-            f"background-color: {self._color.name()}; "
-            f"color: {'#fff' if self._color.lightness() < 128 else '#000'};")
+        text_style = (f"background-color: {self._color.name()}; "
+                      f"color: {'#fff' if self._color.lightness() < 128 else '#000'};")
+        self.btn_color.setStyleSheet(text_style)
+        self.btn_multi_color.setStyleSheet(text_style)
         self.btn_fill.setStyleSheet(f"background-color: {self._fill.name()};")
+
+    def _emit_apply_color(self):
+        if not self._multi:
+            return
+        self.applyColorRequested.emit(
+            (self._color.redF(), self._color.greenF(), self._color.blueF()))
 
     def _emit_apply(self):
         if self._span is None:

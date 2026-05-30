@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
                                QLineEdit, QMainWindow, QMessageBox, QPushButton,
                                QSplitter, QStackedWidget, QToolBar, QWidget)
 
-from core import annots, images as imglib
+from core import annots, fonts as fontlib, images as imglib
 from core import page_ops, search, text_edit
 from core.document import PdfDocument
 from core.render import render_page
@@ -57,10 +57,14 @@ class MainWindow(QMainWindow):
         self._search_results: list[tuple[int, object]] = []
         self._search_idx = -1
         self._search_query = ""
+        self._sel_spans: list[int] = []        # 選択中スパンのインデックス
+        self._fonts_map: dict[str, str] | None = None
+        self._family_to_path: dict[str, str] | None = None
 
         # --- 中央ビュー ---
         self.view = PageView()
         self.view.spanSelected.connect(self._on_span_selected)
+        self.view.spanToggled.connect(self._on_span_toggled)
         self.view.imageSelected.connect(self._on_image_clicked)
         self.view.nextPageRequested.connect(self._scroll_to_next_page)
         self.view.prevPageRequested.connect(self._scroll_to_prev_page)
@@ -77,6 +81,7 @@ class MainWindow(QMainWindow):
         # --- 右 ---
         self.text_panel = TextPanel()
         self.text_panel.applyRequested.connect(self._apply_text_edit)
+        self.text_panel.applyColorRequested.connect(self._apply_color_multi)
         self.images_panel = ImagesPanel()
         self.images_panel.set_document(self.doc)
         self.images_panel.saveSelected.connect(self._save_one_image)
@@ -525,11 +530,29 @@ class MainWindow(QMainWindow):
 
     # ================= 文字編集 =================
     def _on_span_selected(self, span_idx: int):
+        """通常クリック: 単一選択（既存の選択は置き換え）。"""
         if 0 <= span_idx < len(self._spans):
-            span = self._spans[span_idx]
-            self.text_panel.set_span(span)
-            self.view.mark_selection(span["bbox"])
+            self._sel_spans = [span_idx]
+            self._sync_selection_ui()
             self.right.setCurrentIndex(0)
+
+    def _on_span_toggled(self, span_idx: int):
+        """Ctrl+クリック: 選択へ追加/除去（複数選択）。"""
+        if not (0 <= span_idx < len(self._spans)):
+            return
+        if span_idx in self._sel_spans:
+            self._sel_spans.remove(span_idx)
+        else:
+            self._sel_spans.append(span_idx)
+        self._sync_selection_ui()
+        self.right.setCurrentIndex(0)
+
+    def _sync_selection_ui(self):
+        """選択状態を右ペインとオーバーレイへ反映する。"""
+        spans = [self._spans[i] for i in self._sel_spans
+                 if 0 <= i < len(self._spans)]
+        self.text_panel.set_selection(spans)
+        self.view.mark_selections([sp["bbox"] for sp in spans])
 
     def _apply_text_edit(self, payload: dict):
         if not self._require_doc():
@@ -561,6 +584,79 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"テキスト編集に失敗しました:\n{e}")
         self._update_actions()
+
+    def _apply_color_multi(self, color_rgb01: tuple):
+        """複数選択したスパンの文字色をまとめて変更する。
+
+        各スパンの文字・サイズ・（推定できる範囲で）元フォントは保ったまま、
+        色だけを差し替える。1 回のスナップショットで undo できる。
+        """
+        if not self._require_doc() or not self._sel_spans:
+            return
+        spans = [self._spans[i] for i in self._sel_spans
+                 if 0 <= i < len(self._spans)]
+        if not spans:
+            return
+        try:
+            self.doc.snapshot()
+            page = self.doc.page(self.current_index)  # snapshot 後に取り直す
+            for sp in spans:
+                bbox = sp["bbox"]
+                fill = text_edit.sample_background(page, bbox)
+                text_edit.apply_text_edit(
+                    page,
+                    span_bbox=bbox,
+                    origin=sp.get("origin", (bbox[0], bbox[3])),
+                    text=sp.get("text", ""),
+                    fontfile=self._resolve_span_fontfile(sp),
+                    fontsize=float(sp.get("size", 11.0)),
+                    color_rgb01=color_rgb01,
+                    fill_rgb01=fill,
+                    overlay=False,
+                )
+            self._refresh_page()
+            self.pages.refresh(keep_row=self.current_index)
+            self.statusBar().showMessage(
+                f"{len(spans)} 個のテキストの文字色を変更しました", 4000)
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"文字色の変更に失敗しました:\n{e}")
+        self._update_actions()
+
+    # ---- 元フォントの推定（複数選択の色変更で見た目を保つため） --------
+    @staticmethod
+    def _norm_family(name: str) -> str:
+        """フォント名を比較用に正規化（subset 接頭辞除去・英数字小文字化）。"""
+        if "+" in name:               # 例: "ABCDEF+MSGothic" の subset 接頭辞
+            name = name.split("+", 1)[1]
+        return "".join(c for c in name.lower() if c.isalnum())
+
+    def _font_index(self) -> dict[str, str]:
+        """{正規化ファミリ名: フォントファイルパス} を遅延構築・キャッシュ。"""
+        if self._family_to_path is None:
+            from .font_cache import resolve_families
+            self._fonts_map = fontlib.list_fonts()
+            families = resolve_families(self._fonts_map)  # label -> family
+            idx: dict[str, str] = {}
+            for label, family in families.items():
+                idx.setdefault(self._norm_family(family), self._fonts_map[label])
+                idx.setdefault(self._norm_family(label), self._fonts_map[label])
+            self._family_to_path = idx
+        return self._family_to_path
+
+    def _resolve_span_fontfile(self, span: dict) -> str | None:
+        """スパンの元フォント名から埋め込み用フォントファイルを推定する。
+
+        見つからなければ既定の日本語フォント、それも無ければ None（helv）。
+        """
+        idx = self._font_index()
+        key = self._norm_family(span.get("font", ""))
+        if key and key in idx:
+            return idx[key]
+        for k, path in idx.items():   # 部分一致フォールバック
+            if key and (key in k or k in key):
+                return path
+        default = fontlib.default_font(self._fonts_map or {})
+        return (self._fonts_map or {}).get(default) if default else None
 
     # ================= 画像 =================
     def _on_image_clicked(self, xref: int):
@@ -652,6 +748,7 @@ class MainWindow(QMainWindow):
         self.view.set_page_image(render_page(page, zoom), zoom)
 
         self._spans = text_edit.get_spans(page)
+        self._sel_spans = []
         self.view.set_spans(self._spans)
         self._page_images = imglib.list_images(page)
         self.view.set_images(self._page_images)
@@ -699,12 +796,22 @@ class MainWindow(QMainWindow):
         self._zoom_idx = int(self.settings.value("view/zoomIndex", self._zoom_idx))
         self._zoom_idx = max(0, min(len(ZOOM_STEPS) - 1, self._zoom_idx))
 
+        # 前回ユーザー指定した文字色・塗りつぶし色を復元
+        self.text_panel.restore_prefs(
+            self.settings.value("text/color", "", type=str),
+            self.settings.value("text/fill", "", type=str),
+            self.settings.value("text/autoBg", True, type=bool))
+
     def _save_settings(self):
         self.settings.setValue("theme/dark", self.act_theme.isChecked())
         self.settings.setValue("ui/geometry", self.saveGeometry())
         self.settings.setValue("ui/splitterSizes", self.splitter.sizes())
         self.settings.setValue("view/zoomIndex", self._zoom_idx)
         self.settings.setValue("export/dpi", self._export_dpi)
+        prefs = self.text_panel.current_prefs()
+        self.settings.setValue("text/color", prefs["color"])
+        self.settings.setValue("text/fill", prefs["fill"])
+        self.settings.setValue("text/autoBg", prefs["auto_bg"])
 
     def closeEvent(self, event):
         self._save_settings()
