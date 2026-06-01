@@ -42,7 +42,9 @@ def main():
 
     # ページ移動 / ズーム
     w._goto_page(1)
-    w._zoom(+1)
+    w._zoom_step(+1)
+    w._fit_width()
+    w._fit_page()
     w._goto_page(0)
 
     # スパン選択 → 編集適用
@@ -91,11 +93,26 @@ def main():
     assert after > before
     print("OK annotation:", before, "->", after)
 
+    # 注釈の全削除（コアロジック; ハンドラは確認ダイアログを出すため直接検証）
+    from core import annots as _annots
+    pg = w.doc.page(w.current_index)
+    assert _annots.count_annotations(pg) >= 1
+    removed = _annots.clear_annotations(pg)
+    assert removed >= 1 and _annots.count_annotations(pg) == 0
+    print("OK clear annotations:", removed)
+
+    # 未保存フラグ → タイトルに * が付く
+    w._update_title()
+    assert "*" in w.windowTitle(), w.windowTitle()
+    print("OK dirty title:", w.windowTitle())
+
     # 検索
     w.search_edit.setText("page")
     w._search_next()
     assert w._search_results, "no search results"
     print("OK search:", len(w._search_results), "hits")
+    w._focus_search()
+    w._goto_via_panel(0)
 
     # テーマ / 設定
     from app import theme as _theme

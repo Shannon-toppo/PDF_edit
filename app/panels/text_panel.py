@@ -72,6 +72,20 @@ class TextPanel(QWidget):
         bg_layout.addWidget(self.btn_fill)
         self.bg_box = bg_box
 
+        note = QLabel("※ 再描画方式のため、長文化すると折り返しや位置が"
+                      "ずれる場合があります。")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #e07b00;")  # 明暗どちらのテーマでも読める橙
+
+        # --- 単一編集 UI（複数選択時はまとめて隠す） ---
+        self.single_box = QWidget()
+        single_layout = QVBoxLayout(self.single_box)
+        single_layout.setContentsMargins(0, 0, 0, 0)
+        single_layout.addLayout(form)
+        single_layout.addWidget(bg_box)
+        single_layout.addWidget(note)
+        single_layout.addWidget(self.btn_apply)
+
         # --- 複数選択（文字色のみ一括変更） ---
         self.multi_box = QGroupBox("複数選択")
         multi_layout = QVBoxLayout(self.multi_box)
@@ -86,23 +100,15 @@ class TextPanel(QWidget):
         multi_layout.addWidget(self.btn_multi_apply)
         self.multi_box.setVisible(False)
 
-        note = QLabel("※ 再描画方式のため、長文化すると折り返しや位置が"
-                      "ずれる場合があります。")
-        note.setWordWrap(True)
-        note.setStyleSheet("color: #a06000;")
-
         hint = QLabel("※ Ctrl+クリックで複数のテキストを選択できます。")
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #607080;")
+        hint.setStyleSheet("font-style: italic;")  # 色はテーマに追従（パレット既定）
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.info)
         layout.addWidget(hint)
-        layout.addLayout(form)
-        layout.addWidget(bg_box)
+        layout.addWidget(self.single_box)
         layout.addWidget(self.multi_box)
-        layout.addWidget(note)
-        layout.addWidget(self.btn_apply)
         layout.addStretch(1)
         self._update_color_buttons()
 
@@ -137,10 +143,8 @@ class TextPanel(QWidget):
         self._update_color_buttons()
 
     def _set_single_enabled(self, enabled: bool) -> None:
-        """単一編集 UI の有効/無効を切り替える。"""
-        for w in (self.edit_text, self.combo_font, self.spin_size,
-                  self.btn_color, self.btn_apply, self.bg_box):
-            w.setEnabled(enabled)
+        """単一編集 UI の表示/非表示を切り替える（複数選択時は隠す）。"""
+        self.single_box.setVisible(enabled)
 
     def set_span(self, span: dict | None) -> None:
         self._span = span

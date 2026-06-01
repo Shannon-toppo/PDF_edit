@@ -67,6 +67,14 @@ class PagesPanel(QWidget):
             row = max(0, min(row, self.list.count() - 1))
             self.list.setCurrentRow(row)
 
+    def refresh_one(self, idx: int) -> None:
+        """指定 1 ページのサムネイルだけを再生成する（回転など単一変更用）。"""
+        if not (self._doc and self._doc.is_open):
+            return
+        if 0 <= idx < self.list.count():
+            img: QImage = render_thumbnail(self._doc.page(idx), 150)
+            self.list.item(idx).setIcon(QIcon(QPixmap.fromImage(img)))
+
     # ---- ボタン操作 ----------------------------------------------------
     def _on_row_changed(self, row: int):
         if row >= 0:

@@ -34,6 +34,7 @@ class PageView(QGraphicsView):
     prevPageRequested = Signal()   # 上端でさらに上スクロール
     annotRectDrawn = Signal(float, float, float, float)  # PDF 座標の矩形
     pdfDropped = Signal(str)       # PDF ファイルがドロップされた
+    zoomRequested = Signal(int)    # Ctrl+ホイール（+1=拡大 / -1=縮小）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -67,6 +68,24 @@ class PageView(QGraphicsView):
         self._sel_items = []
         self._search_items = []
         self._rubber = None
+
+    def show_placeholder(self) -> None:
+        """ファイル未読込時の案内をシーン中央に表示する。"""
+        self._scene.clear()
+        self._pixitem = None
+        self._hover_item = None
+        self._sel_items = []
+        self._search_items = []
+        self._rubber = None
+        text = self._scene.addText(
+            "PDF をここにドロップ、または「ファイル → 開く」で選択")
+        text.setDefaultTextColor(QColor(225, 225, 225))
+        font = text.font()
+        font.setPointSize(13)
+        text.setFont(font)
+        rect = text.boundingRect()
+        text.setPos(-rect.width() / 2, -rect.height() / 2)
+        self._scene.setSceneRect(text.sceneBoundingRect().adjusted(-40, -40, 40, 40))
 
     def set_spans(self, spans: list[dict]) -> None:
         self._spans = spans
@@ -145,6 +164,13 @@ class PageView(QGraphicsView):
         bar.setValue(bar.maximum())
 
     def wheelEvent(self, event):
+        # Ctrl+ホイールはズーム（ページ送り/スクロールより優先）
+        if event.modifiers() & Qt.ControlModifier:
+            dy = event.angleDelta().y()
+            if dy != 0:
+                self.zoomRequested.emit(+1 if dy > 0 else -1)
+            event.accept()
+            return
         # 下端でさらに下へ / 上端でさらに上へスクロールしたら隣のページへ送る
         if self._pixitem is not None:
             bar = self.verticalScrollBar()
