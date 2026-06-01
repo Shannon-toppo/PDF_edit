@@ -574,10 +574,15 @@ class MainWindow(QMainWindow):
         if n == 0:
             self.statusBar().showMessage("このページに注釈はありません", 4000)
             return
-        if QMessageBox.question(
-                self, "注釈の削除",
-                f"このページの注釈 {n} 個をすべて削除しますか？") \
-                != QMessageBox.StandardButton.Yes:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("注釈の削除")
+        box.setText(f"このページの注釈 {n} 個をすべて削除しますか？")
+        btn_del = box.addButton("削除", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(btn_del)
+        box.exec()
+        if box.clickedButton() is not btn_del:
             return
         try:
             self.doc.snapshot()
@@ -948,16 +953,21 @@ class MainWindow(QMainWindow):
         """未保存の変更があれば確認する。続行してよいなら True を返す。"""
         if not (self.doc.is_open and self.doc.dirty):
             return True
-        ret = QMessageBox.warning(
-            self, "未保存の変更",
-            "保存していない変更があります。保存しますか？",
-            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
-            | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Save)
-        if ret == QMessageBox.StandardButton.Save:
+        # 標準ボタンは英語ラベルのため、日本語ボタンを明示的に用意する
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("未保存の変更")
+        box.setText("保存していない変更があります。保存しますか？")
+        btn_save = box.addButton("保存", QMessageBox.ButtonRole.AcceptRole)
+        btn_discard = box.addButton("保存しない", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(btn_save)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is btn_save:
             self.save_file()
             return not self.doc.dirty   # 保存ダイアログをキャンセルした等なら中止
-        return ret == QMessageBox.StandardButton.Discard
+        return clicked is btn_discard   # 「保存しない」=破棄して続行 / それ以外=中止
 
     # ================= テーマ / 設定 =================
     def _set_theme(self, mode: str):
