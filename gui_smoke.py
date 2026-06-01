@@ -98,9 +98,12 @@ def main():
     print("OK search:", len(w._search_results), "hits")
 
     # テーマ / 設定
-    w._toggle_theme(True)
+    from app import theme as _theme
+    w._set_theme(_theme.THEME_DARK)
+    w._set_theme(_theme.THEME_LIGHT)
+    w._set_theme(_theme.THEME_SYSTEM)
     w._save_settings()
-    print("OK theme toggle + settings save")
+    print("OK theme switch + settings save")
 
     # 保存
     out = os.path.join(tmp, "out.pdf")
