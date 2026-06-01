@@ -193,6 +193,21 @@
 
 ---
 
+## 14. テーマを 3 択化（システム追従 / ライト / ダーク）
+
+- **背景の不具合**: 従来は「ダークテーマ」のチェック 1 個で `apply_theme(app, dark: bool)` を呼び、オフ時は `app.style().standardPalette()` を適用していた。ところが **Qt 6.8 の Fusion はデフォルトで OS のカラースキームに追従する**ため、OS がダークだと「オフ」でも標準パレット自体がダークになり、オンにすると独自パレットの「少し違うダーク」になる、という状態だった。
+- **対応**: 真偽値を 3 値モード（`THEME_SYSTEM` / `THEME_LIGHT` / `THEME_DARK`）に変更。初期値は **システム追従**。
+- **theme.py**: `apply_theme(app, mode: str)` に変更。Qt のカラースキーム API（`QStyleHints.setColorScheme` / `colorScheme`, Qt 6.5/6.8+）を使用。
+  - システム: `ColorScheme.Unknown` で OS に追従し、`colorScheme()==Dark` なら独自ダークパレット、それ以外は標準パレット。
+  - ライト: `ColorScheme.Light` を明示し、**OS がダークでも標準（ライト）パレットに固定**（上記不具合の本修正点）。
+  - ダーク: `ColorScheme.Dark` + 独自ダークパレット。
+  - `setColorScheme` は古い Qt に無いので `try/except (AttributeError, TypeError)` でガード。
+- **main_window.py**: 単一チェックの `act_theme` を排他 `QActionGroup` の 3 項目（`act_theme_system/light/dark`）に置換し、「表示 → テーマ」サブメニューに配置。`_toggle_theme` を `_set_theme(mode)` に、`_theme_action(mode)` ヘルパーを追加。
+- **設定の保存/移行**: QSettings は `theme/mode` に保存。`_restore_settings` は `theme/mode` が無ければ旧 `theme/dark`（真偽値）から移行（True→dark / False→light）、それも無ければ system。
+- 検証: offscreen で 3 モードの `_set_theme` 切替＋ `_save_settings` の往復が通ること（`gui_smoke.py` を 3 モード対応に更新）。実ウィンドウ表示でも正常動作を確認済み。
+
+---
+
 ## 横断的な注意点・既知の制約
 
 - **文字編集は再描画方式**: 文字数を増やすと折り返し・位置がずれる場合がある。複雑な背景では塗りつぶし色の推定が外れる（手動指定 or 上書きモードで回避）。

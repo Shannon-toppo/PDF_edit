@@ -157,9 +157,20 @@ class MainWindow(QMainWindow):
         self.act_del = QAction("ページを削除", self)
         self.act_del.triggered.connect(lambda: self._delete_page(self.current_index))
 
-        # テーマ
-        self.act_theme = QAction("ダークテーマ", self, checkable=True)
-        self.act_theme.triggered.connect(self._toggle_theme)
+        # テーマ（システム追従 / ライト / ダークの 3 択・排他）
+        self.act_theme_system = QAction("システムのテーマを利用", self, checkable=True)
+        self.act_theme_light = QAction("ライトテーマ", self, checkable=True)
+        self.act_theme_dark = QAction("ダークテーマ", self, checkable=True)
+        theme_grp = QActionGroup(self)
+        for a in (self.act_theme_system, self.act_theme_light, self.act_theme_dark):
+            theme_grp.addAction(a)
+        self.act_theme_system.setChecked(True)
+        self.act_theme_system.triggered.connect(
+            lambda: self._set_theme(theme.THEME_SYSTEM))
+        self.act_theme_light.triggered.connect(
+            lambda: self._set_theme(theme.THEME_LIGHT))
+        self.act_theme_dark.triggered.connect(
+            lambda: self._set_theme(theme.THEME_DARK))
 
         # 選択モード
         self.act_mode_text = QAction("文字選択", self, checkable=True)
@@ -246,7 +257,9 @@ class MainWindow(QMainWindow):
                   self.act_mode_pan):
             m_view.addAction(a)
         m_view.addSeparator()
-        m_view.addAction(self.act_theme)
+        m_theme = m_view.addMenu("テーマ")
+        for a in (self.act_theme_system, self.act_theme_light, self.act_theme_dark):
+            m_theme.addAction(a)
 
         m_help = mb.addMenu("ヘルプ")
         act_about = QAction("バージョン情報", self)
@@ -775,14 +788,30 @@ class MainWindow(QMainWindow):
         self.act_redo.setEnabled(ok and self.doc.can_redo())
 
     # ================= テーマ / 設定 =================
-    def _toggle_theme(self, checked: bool):
-        theme.apply_theme(QApplication.instance(), checked)
-        self.settings.setValue("theme/dark", checked)
+    def _set_theme(self, mode: str):
+        theme.apply_theme(QApplication.instance(), mode)
+        self.settings.setValue("theme/mode", mode)
+
+    def _theme_action(self, mode: str):
+        """テーマモードに対応するメニュー項目を返す。"""
+        return {
+            theme.THEME_SYSTEM: self.act_theme_system,
+            theme.THEME_LIGHT: self.act_theme_light,
+            theme.THEME_DARK: self.act_theme_dark,
+        }.get(mode, self.act_theme_system)
 
     def _restore_settings(self):
-        dark = self.settings.value("theme/dark", False, type=bool)
-        self.act_theme.setChecked(dark)
-        theme.apply_theme(QApplication.instance(), dark)
+        mode = self.settings.value("theme/mode", "", type=str)
+        if mode not in (theme.THEME_SYSTEM, theme.THEME_LIGHT, theme.THEME_DARK):
+            # 旧バージョンの真偽値設定からの移行（無ければシステム追従）
+            old_dark = self.settings.value("theme/dark", None)
+            if old_dark is not None:
+                mode = theme.THEME_DARK if self.settings.value(
+                    "theme/dark", False, type=bool) else theme.THEME_LIGHT
+            else:
+                mode = theme.THEME_SYSTEM
+        self._theme_action(mode).setChecked(True)
+        theme.apply_theme(QApplication.instance(), mode)
 
         geom = self.settings.value("ui/geometry")
         if geom is not None:
@@ -803,7 +832,10 @@ class MainWindow(QMainWindow):
             self.settings.value("text/autoBg", True, type=bool))
 
     def _save_settings(self):
-        self.settings.setValue("theme/dark", self.act_theme.isChecked())
+        for mode in (theme.THEME_SYSTEM, theme.THEME_LIGHT, theme.THEME_DARK):
+            if self._theme_action(mode).isChecked():
+                self.settings.setValue("theme/mode", mode)
+                break
         self.settings.setValue("ui/geometry", self.saveGeometry())
         self.settings.setValue("ui/splitterSizes", self.splitter.sizes())
         self.settings.setValue("view/zoomIndex", self._zoom_idx)
