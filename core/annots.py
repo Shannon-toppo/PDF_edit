@@ -55,3 +55,17 @@ def add_annotation(page: fitz.Page, kind: str, rect,
     else:
         raise ValueError(f"未知の注釈種別: {kind}")
     return annot
+
+
+def count_annotations(page: fitz.Page) -> int:
+    """ページ上の注釈数を返す。"""
+    return sum(1 for _ in page.annots())
+
+
+def clear_annotations(page: fitz.Page) -> int:
+    """ページ上の注釈をすべて削除し、削除数を返す。"""
+    removed = 0
+    for annot in list(page.annots()):
+        page.delete_annot(annot)
+        removed += 1
+    return removed

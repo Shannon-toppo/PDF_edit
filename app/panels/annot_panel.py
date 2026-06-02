@@ -1,6 +1,7 @@
 """右ペイン: 注釈の種別・色・テキストを選ぶ。ページ上のドラッグで適用される。"""
 from __future__ import annotations
 
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QColorDialog, QComboBox, QDoubleSpinBox,
                                QFormLayout, QLabel, QLineEdit, QPushButton,
@@ -20,6 +21,8 @@ _DEFAULT_COLORS = {
 
 
 class AnnotPanel(QWidget):
+    clearAnnotsRequested = Signal()   # 現在ページの注釈を全削除
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._color = QColor(255, 235, 0)
@@ -48,11 +51,15 @@ class AnnotPanel(QWidget):
         note = QLabel("ページ上をドラッグして範囲を指定すると注釈を追加します。\n"
                       "付箋はドラッグ範囲の左上に配置されます。")
         note.setWordWrap(True)
-        note.setStyleSheet("color: #6a6a6a;")
+        note.setStyleSheet("font-style: italic;")  # 色はテーマに追従（パレット既定）
+
+        self.btn_clear = QPushButton("このページの注釈を削除")
+        self.btn_clear.clicked.connect(lambda: self.clearAnnotsRequested.emit())
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(note)
+        layout.addWidget(self.btn_clear)
         layout.addStretch(1)
         self._update_color_button()
 

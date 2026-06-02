@@ -5,9 +5,10 @@ import os
 
 from PySide6.QtCore import Qt, QTimer, QSettings, Signal
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
-from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
-                               QLineEdit, QMainWindow, QMessageBox, QPushButton,
-                               QSplitter, QStackedWidget, QToolBar, QWidget)
+from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout,
+                               QInputDialog, QLabel, QLineEdit, QMainWindow,
+                               QMessageBox, QPushButton, QSplitter,
+                               QStackedWidget, QStyle, QToolBar, QWidget)
 
 from core import annots, fonts as fontlib, images as imglib
 from core import page_ops, search, text_edit
@@ -24,6 +25,7 @@ from .panels.pages_panel import PagesPanel
 from .panels.text_panel import TextPanel
 
 ZOOM_STEPS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
+ZOOM_MIN, ZOOM_MAX = 0.2, 6.0
 
 
 class _SearchLineEdit(QLineEdit):
@@ -52,7 +54,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings()
         self.doc = PdfDocument()
         self.current_index = 0
-        self._zoom_idx = 2  # 1.0
+        self._zoom = 1.0
         self._export_dpi = int(self.settings.value("export/dpi", 150))
         self._search_results: list[tuple[int, object]] = []
         self._search_idx = -1
@@ -70,6 +72,7 @@ class MainWindow(QMainWindow):
         self.view.prevPageRequested.connect(self._scroll_to_prev_page)
         self.view.annotRectDrawn.connect(self._apply_annotation)
         self.view.pdfDropped.connect(self._open_path)
+        self.view.zoomRequested.connect(self._zoom_step)
 
         # --- 左 ---
         self.pages = PagesPanel()
@@ -88,6 +91,7 @@ class MainWindow(QMainWindow):
         self.images_panel.saveAll.connect(self._save_all_images)
         self.images_panel.imageHighlighted.connect(self._highlight_image)
         self.annot_panel = AnnotPanel()
+        self.annot_panel.clearAnnotsRequested.connect(self._clear_annotations)
         self.right = QStackedWidget()
         self.right.addWidget(self.text_panel)     # index 0
         self.right.addWidget(self.images_panel)   # index 1
@@ -116,6 +120,7 @@ class MainWindow(QMainWindow):
         self._build_search_toolbar()
         self._build_menubar()
         self.statusBar().showMessage("ファイルを開いてください")
+        self.view.show_placeholder()
         self._update_actions()
         self._restore_settings()
 
@@ -141,9 +146,30 @@ class MainWindow(QMainWindow):
         self.act_redo.triggered.connect(self.redo)
 
         self.act_zoom_in = QAction("拡大", self, shortcut=QKeySequence.ZoomIn)
-        self.act_zoom_in.triggered.connect(lambda: self._zoom(+1))
+        self.act_zoom_in.triggered.connect(lambda: self._zoom_step(+1))
         self.act_zoom_out = QAction("縮小", self, shortcut=QKeySequence.ZoomOut)
-        self.act_zoom_out.triggered.connect(lambda: self._zoom(-1))
+        self.act_zoom_out.triggered.connect(lambda: self._zoom_step(-1))
+        self.act_fit_width = QAction("幅に合わせる", self, shortcut="Ctrl+0")
+        self.act_fit_width.triggered.connect(self._fit_width)
+        self.act_fit_page = QAction("全体に合わせる", self, shortcut="Ctrl+9")
+        self.act_fit_page.triggered.connect(self._fit_page)
+
+        # 検索 / ページ移動
+        self.act_find = QAction("検索", self, shortcut=QKeySequence.Find)
+        self.act_find.triggered.connect(self._focus_search)
+        self.act_next_page = QAction("次のページ", self,
+                                     shortcut=QKeySequence.MoveToNextPage)
+        self.act_next_page.triggered.connect(self._scroll_to_next_page)
+        self.act_prev_page = QAction("前のページ", self,
+                                     shortcut=QKeySequence.MoveToPreviousPage)
+        self.act_prev_page.triggered.connect(self._scroll_to_prev_page)
+        self.act_first_page = QAction("最初のページ", self, shortcut="Ctrl+Home")
+        self.act_first_page.triggered.connect(lambda: self._goto_via_panel(0))
+        self.act_last_page = QAction("最後のページ", self, shortcut="Ctrl+End")
+        self.act_last_page.triggered.connect(
+            lambda: self._goto_via_panel(self.doc.page_count - 1))
+        self.act_goto = QAction("ページへ移動…", self, shortcut="Ctrl+G")
+        self.act_goto.triggered.connect(self._goto_dialog)
 
         # ページ編集
         self.act_rot_cw = QAction("右に90°回転", self)
@@ -172,11 +198,15 @@ class MainWindow(QMainWindow):
         self.act_theme_dark.triggered.connect(
             lambda: self._set_theme(theme.THEME_DARK))
 
-        # 選択モード
-        self.act_mode_text = QAction("文字選択", self, checkable=True)
-        self.act_mode_image = QAction("画像選択", self, checkable=True)
-        self.act_mode_annot = QAction("注釈", self, checkable=True)
-        self.act_mode_pan = QAction("移動", self, checkable=True)
+        # 選択モード（Ctrl+1〜4 で切替。文字入力中の誤爆を避けるため修飾キー付き）
+        self.act_mode_text = QAction("文字選択", self, checkable=True,
+                                     shortcut="Ctrl+1")
+        self.act_mode_image = QAction("画像選択", self, checkable=True,
+                                      shortcut="Ctrl+2")
+        self.act_mode_annot = QAction("注釈", self, checkable=True,
+                                      shortcut="Ctrl+3")
+        self.act_mode_pan = QAction("移動", self, checkable=True,
+                                    shortcut="Ctrl+4")
         self.act_mode_text.setChecked(True)
         grp = QActionGroup(self)
         for a in (self.act_mode_text, self.act_mode_image, self.act_mode_annot,
@@ -187,9 +217,34 @@ class MainWindow(QMainWindow):
         self.act_mode_annot.triggered.connect(lambda: self._set_mode(MODE_ANNOT))
         self.act_mode_pan.triggered.connect(lambda: self._set_mode(MODE_PAN))
 
+    def _assign_icons(self):
+        """主要アクションに標準アイコンとツールチップを付与する。"""
+        sp = QStyle.StandardPixmap
+        icons = {
+            self.act_open: sp.SP_DialogOpenButton,
+            self.act_save: sp.SP_DialogSaveButton,
+            self.act_saveas: sp.SP_DriveFDIcon,
+            self.act_undo: sp.SP_ArrowBack,
+            self.act_redo: sp.SP_ArrowForward,
+            self.act_zoom_in: sp.SP_FileDialogContentsView,
+            self.act_zoom_out: sp.SP_FileDialogListView,
+            self.act_prev_page: sp.SP_ArrowUp,
+            self.act_next_page: sp.SP_ArrowDown,
+        }
+        style = self.style()
+        for act, pix in icons.items():
+            act.setIcon(style.standardIcon(pix))
+        # 全アクションにツールチップ（ショートカット付き）を設定
+        for act in self.findChildren(QAction):
+            if act.text():
+                sc = act.shortcut().toString()
+                act.setToolTip(f"{act.text()}（{sc}）" if sc else act.text())
+
     def _build_toolbar(self):
+        self._assign_icons()
         tb = QToolBar("メイン")
         tb.setMovable(False)
+        tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.addToolBar(tb)
         for a in (self.act_open, self.act_save, self.act_saveas):
             tb.addAction(a)
@@ -243,15 +298,23 @@ class MainWindow(QMainWindow):
         m_edit = mb.addMenu("編集")
         m_edit.addAction(self.act_undo)
         m_edit.addAction(self.act_redo)
+        m_edit.addSeparator()
+        m_edit.addAction(self.act_find)
 
         m_page = mb.addMenu("ページ")
         for a in (self.act_rot_cw, self.act_rot_ccw, self.act_dup,
                   self.act_blank, self.act_del):
             m_page.addAction(a)
+        m_page.addSeparator()
+        for a in (self.act_first_page, self.act_prev_page, self.act_next_page,
+                  self.act_last_page, self.act_goto):
+            m_page.addAction(a)
 
         m_view = mb.addMenu("表示")
         m_view.addAction(self.act_zoom_in)
         m_view.addAction(self.act_zoom_out)
+        m_view.addAction(self.act_fit_width)
+        m_view.addAction(self.act_fit_page)
         m_view.addSeparator()
         for a in (self.act_mode_text, self.act_mode_image, self.act_mode_annot,
                   self.act_mode_pan):
@@ -298,6 +361,8 @@ class MainWindow(QMainWindow):
 
     def _open_path(self, path: str) -> bool:
         """指定パスの PDF を開く（ダイアログ / D&D / CLI 引数で共用）。"""
+        if not self._confirm_discard():
+            return False
         try:
             self.doc.open(path)
         except Exception as e:
@@ -307,7 +372,6 @@ class MainWindow(QMainWindow):
         self.pages.set_document(self.doc)
         self.images_panel.set_document(self.doc)
         self._refresh_all()
-        self.setWindowTitle(f"PDFedit v{__version__} - {os.path.basename(path)}")
         return True
 
     # ---- ドラッグ＆ドロップ（ウィンドウ全体） -------------------------
@@ -339,6 +403,7 @@ class MainWindow(QMainWindow):
             return
         try:
             self.doc.save()
+            self._update_title()
             self.statusBar().showMessage(f"保存しました: {self.doc.path}", 4000)
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"保存に失敗しました:\n{e}")
@@ -352,7 +417,7 @@ class MainWindow(QMainWindow):
             return
         try:
             self.doc.save(path)
-            self.setWindowTitle(f"軽量PDFエディター - {os.path.basename(path)}")
+            self._update_title()
             self.statusBar().showMessage(f"保存しました: {path}", 4000)
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"保存に失敗しました:\n{e}")
@@ -434,6 +499,7 @@ class MainWindow(QMainWindow):
         self.pages.refresh(keep_row=dst)
         self._refresh_page()
         self._update_actions()
+        self.statusBar().showMessage("ページを移動しました", 4000)
 
     def _delete_page(self, idx: int):
         if self.doc.page_count <= 1:
@@ -445,15 +511,18 @@ class MainWindow(QMainWindow):
         self.pages.refresh(keep_row=self.current_index)
         self._refresh_page()
         self._update_actions()
+        self.statusBar().showMessage("ページを削除しました", 4000)
 
     def _rotate(self, delta: int):
         if not self._require_doc():
             return
         self.doc.snapshot()
         page_ops.rotate_page(self.doc.doc, self.current_index, delta)
-        self.pages.refresh(keep_row=self.current_index)
+        # 回転は当該 1 ページのみ変わるのでサムネイルも 1 枚だけ更新する
+        self.pages.refresh_one(self.current_index)
         self._refresh_page()
         self._update_actions()
+        self.statusBar().showMessage("ページを回転しました", 4000)
 
     def _duplicate_page(self):
         if not self._require_doc():
@@ -494,6 +563,36 @@ class MainWindow(QMainWindow):
                 f"{annots.LABELS[opts['kind']]}を追加しました", 4000)
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"注釈の追加に失敗しました:\n{e}")
+        self._update_actions()
+
+    def _clear_annotations(self):
+        """現在ページの注釈をすべて削除する。"""
+        if not self._require_doc():
+            return
+        page = self.doc.page(self.current_index)
+        n = annots.count_annotations(page)
+        if n == 0:
+            self.statusBar().showMessage("このページに注釈はありません", 4000)
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("注釈の削除")
+        box.setText(f"このページの注釈 {n} 個をすべて削除しますか？")
+        btn_del = box.addButton("削除", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(btn_del)
+        box.exec()
+        if box.clickedButton() is not btn_del:
+            return
+        try:
+            self.doc.snapshot()
+            page = self.doc.page(self.current_index)  # snapshot 後に取り直す
+            removed = annots.clear_annotations(page)
+            self._refresh_page()
+            self.pages.refresh_one(self.current_index)
+            self.statusBar().showMessage(f"{removed} 個の注釈を削除しました", 4000)
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"注釈の削除に失敗しました:\n{e}")
         self._update_actions()
 
     # ================= 検索 =================
@@ -743,9 +842,58 @@ class MainWindow(QMainWindow):
         elif mode == MODE_ANNOT:
             self.right.setCurrentIndex(2)
 
-    def _zoom(self, delta: int):
-        self._zoom_idx = max(0, min(len(ZOOM_STEPS) - 1, self._zoom_idx + delta))
-        self._refresh_page()
+    def _zoom_step(self, delta: int):
+        """ZOOM_STEPS の隣の倍率へ移動する（端は ZOOM_MIN/MAX でクランプ）。"""
+        cur = self._zoom
+        if delta > 0:
+            nxt = next((s for s in ZOOM_STEPS if s > cur + 1e-6), ZOOM_MAX)
+        else:
+            nxt = next((s for s in reversed(ZOOM_STEPS) if s < cur - 1e-6), ZOOM_MIN)
+        self._set_zoom(nxt)
+
+    def _set_zoom(self, zoom: float):
+        self._zoom = max(ZOOM_MIN, min(ZOOM_MAX, zoom))
+        if self.doc.is_open:
+            self._refresh_page()
+
+    def _fit_width(self):
+        """現在ページがビューポート幅に収まる倍率に合わせる。"""
+        if not self.doc.is_open:
+            return
+        pw = self.doc.page(self.current_index).rect.width
+        if pw > 0:
+            self._set_zoom((self.view.viewport().width() - 24) / pw)
+
+    def _fit_page(self):
+        """現在ページ全体がビューポートに収まる倍率に合わせる。"""
+        if not self.doc.is_open:
+            return
+        rect = self.doc.page(self.current_index).rect
+        if rect.width > 0 and rect.height > 0:
+            zw = (self.view.viewport().width() - 24) / rect.width
+            zh = (self.view.viewport().height() - 24) / rect.height
+            self._set_zoom(min(zw, zh))
+
+    def _focus_search(self):
+        """検索バーにフォーカスし、既存テキストを選択する（Ctrl+F）。"""
+        self.search_edit.setFocus()
+        self.search_edit.selectAll()
+
+    def _goto_via_panel(self, idx: int):
+        """サムネイル選択経由でページへ移動する（選択強調も同期）。"""
+        if self.doc.is_open and 0 <= idx < self.doc.page_count:
+            self.pages.set_current_index(idx)
+            self.view.scroll_to_top()
+
+    def _goto_dialog(self):
+        """「N ページへ移動」の入力ダイアログ（Ctrl+G）。"""
+        if not self._require_doc():
+            return
+        n, ok = QInputDialog.getInt(
+            self, "ページへ移動", "ページ番号:",
+            self.current_index + 1, 1, self.doc.page_count)
+        if ok:
+            self._goto_via_panel(n - 1)
 
     def _refresh_all(self):
         self.pages.refresh(keep_row=self.current_index)
@@ -757,7 +905,7 @@ class MainWindow(QMainWindow):
             return
         self.current_index = max(0, min(self.current_index, self.doc.page_count - 1))
         page = self.doc.page(self.current_index)
-        zoom = ZOOM_STEPS[self._zoom_idx]
+        zoom = self._zoom
         self.view.set_page_image(render_page(page, zoom), zoom)
 
         self._spans = text_edit.get_spans(page)
@@ -780,12 +928,46 @@ class MainWindow(QMainWindow):
         ok = self.doc.is_open
         for a in (self.act_save, self.act_saveas, self.act_merge, self.act_split,
                   self.act_png, self.act_zoom_in, self.act_zoom_out,
+                  self.act_fit_width, self.act_fit_page, self.act_find,
+                  self.act_first_page, self.act_prev_page, self.act_next_page,
+                  self.act_last_page, self.act_goto,
                   self.act_mode_text, self.act_mode_image, self.act_mode_annot,
                   self.act_mode_pan, self.act_rot_cw, self.act_rot_ccw,
                   self.act_dup, self.act_blank, self.act_del):
             a.setEnabled(ok)
         self.act_undo.setEnabled(ok and self.doc.can_undo())
         self.act_redo.setEnabled(ok and self.doc.can_redo())
+        self._update_title()
+
+    def _update_title(self):
+        """タイトルバーを更新する（未保存なら先頭に * を付ける）。"""
+        base = f"PDFedit v{__version__}"
+        if not self.doc.is_open:
+            self.setWindowTitle(base)
+            return
+        name = os.path.basename(self.doc.path) if self.doc.path else "無題"
+        star = "*" if self.doc.dirty else ""
+        self.setWindowTitle(f"{base} - {star}{name}")
+
+    def _confirm_discard(self) -> bool:
+        """未保存の変更があれば確認する。続行してよいなら True を返す。"""
+        if not (self.doc.is_open and self.doc.dirty):
+            return True
+        # 標準ボタンは英語ラベルのため、日本語ボタンを明示的に用意する
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("未保存の変更")
+        box.setText("保存していない変更があります。保存しますか？")
+        btn_save = box.addButton("保存", QMessageBox.ButtonRole.AcceptRole)
+        btn_discard = box.addButton("保存しない", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(btn_save)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is btn_save:
+            self.save_file()
+            return not self.doc.dirty   # 保存ダイアログをキャンセルした等なら中止
+        return clicked is btn_discard   # 「保存しない」=破棄して続行 / それ以外=中止
 
     # ================= テーマ / 設定 =================
     def _set_theme(self, mode: str):
@@ -822,8 +1004,8 @@ class MainWindow(QMainWindow):
                 self.splitter.setSizes([int(x) for x in sizes])
             except (TypeError, ValueError):
                 pass
-        self._zoom_idx = int(self.settings.value("view/zoomIndex", self._zoom_idx))
-        self._zoom_idx = max(0, min(len(ZOOM_STEPS) - 1, self._zoom_idx))
+        self._zoom = float(self.settings.value("view/zoom", self._zoom))
+        self._zoom = max(ZOOM_MIN, min(ZOOM_MAX, self._zoom))
 
         # 前回ユーザー指定した文字色・塗りつぶし色を復元
         self.text_panel.restore_prefs(
@@ -838,7 +1020,7 @@ class MainWindow(QMainWindow):
                 break
         self.settings.setValue("ui/geometry", self.saveGeometry())
         self.settings.setValue("ui/splitterSizes", self.splitter.sizes())
-        self.settings.setValue("view/zoomIndex", self._zoom_idx)
+        self.settings.setValue("view/zoom", self._zoom)
         self.settings.setValue("export/dpi", self._export_dpi)
         prefs = self.text_panel.current_prefs()
         self.settings.setValue("text/color", prefs["color"])
@@ -846,6 +1028,9 @@ class MainWindow(QMainWindow):
         self.settings.setValue("text/autoBg", prefs["auto_bg"])
 
     def closeEvent(self, event):
+        if not self._confirm_discard():
+            event.ignore()
+            return
         self._save_settings()
         super().closeEvent(event)
 
